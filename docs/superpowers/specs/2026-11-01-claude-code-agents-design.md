@@ -21,7 +21,7 @@ little as possible**.
 
 - A fourth `Provider` variant, `ClaudeCode`, selectable where the other three
   are (app, group).
-- Each such agent has a working directory and a model (alias or full name).
+- Each such agent has a working directory. Which model runs is Claude Code's own setting (its config or `/model` in the terminal), never Guaca's.
 - A turn runs one headless `claude` process with permissions skipped; its text
   streams into the channel; its tool calls draw as the existing work chips and
   are kept on the saved message.
@@ -80,7 +80,9 @@ little as possible**.
 ## Decisions the operator made
 
 - Guaca chat is the way to talk to the agents; no terminal in the app.
-- Model selection and the like are agent fields, not a UX.
+- Model selection stays inside Claude Code (its settings, or `/model` via the
+  terminal escape hatch). Guaca never passes `--model`. (Revised 2026-11-01:
+  the wrapper is around Claude Code, not around a model.)
 - `/compact` and `/clear` are frequent and must work from the channel.
 - The escape hatch is a button that opens Ghostty on the session.
 - Native daemon on this machine.
@@ -91,7 +93,7 @@ little as possible**.
 
 `Provider::ClaudeCode` (`config.rs`), wire spelling `claude_code`. `is_ready`
 needs only the `claude` binary on PATH (reuse `programs.rs` lookup).
-`endpoint` is `None`; `active_model` is the agent's own model.
+`endpoint` is the program name; `active_model` is a label, as for `Claude`.
 
 ### Agent fields
 
@@ -99,13 +101,12 @@ Three new nullable columns on `agents`, migration 66:
 
 - `cwd TEXT` — working directory. Required for this kind (validated on save:
   exists, is a directory, is absolute). Other kinds ignore it.
-- `claude_model TEXT` — model alias or name passed as `--model`. Read via
-  `own_model` for this provider, like `subscription_model` is for ChatGPT.
 - `claude_session TEXT` — the current session id. Set by the runtime, cleared
   by `/clear`, shown on the agent in the UI. Never edited by the operator.
 
-Both drafts (`AgentDraft` Rust and TS) gain `cwd` and `claude_model` as
-`Option` + `#[serde(default)]`. `claude_session` is card-only.
+Both drafts (`AgentDraft` Rust and TS) gain `cwd` as `Option` +
+`#[serde(default)]`. `claude_session` is card-only. `own_model` returns `None`
+for this provider, as it does for `Claude`: no model field exists for it.
 
 ### The turn
 
@@ -121,7 +122,7 @@ One process per turn:
 
 ```
 claude -p --input-format stream-json --output-format stream-json --verbose
-       --dangerously-skip-permissions --model <m>
+       --dangerously-skip-permissions
        (--session-id <new uuid> | --resume <stored>)
        [--append-system-prompt <card.system_prompt>]   # first turn only
 ```
@@ -199,9 +200,9 @@ actions.
 ### UI
 
 - `SettingsDialog` and `GroupEditor` provider choice gains "Claude Code".
-- `AgentEditor` shows, for this provider: Working directory (text, required),
-  Model (text with the `ModelSuggestions` aliases), and the read-only session
-  id with a copy affordance. Hides E2B/Kernel toggles for this kind.
+- `AgentEditor` shows, for this provider: Working directory (text, required)
+  and the read-only session id with a copy affordance. No model field: the
+  operator changes the model inside Claude Code (Resume in terminal, `/model`). Hides E2B/Kernel toggles for this kind.
 - `trail.ts` already describes unknown tools as "Used Bash"; add friendly
   names for Claude Code's built-ins (Bash → "Ran a command", Edit/Write →
   "Edited <basename>", Read → "Read <basename>") in the same table the other

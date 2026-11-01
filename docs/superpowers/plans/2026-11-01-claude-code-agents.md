@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A fourth provider, Claude Code, whose agents are headless `claude` sessions with their own working directory and tools, orchestrated by Guaca's existing rooms, channels and peer messaging.
+**Goal:** A fourth provider, Claude Code, whose agents are headless `claude` sessions with their own working directory, tools and model choice, orchestrated by Guaca's existing rooms, channels and peer messaging.
 
 **Architecture:** One new provider file (`llm/claude_code.rs`) spawns one `claude -p` process per turn and folds its stream-json into the `Completion` the runtime already consumes; the runtime offers it no tools and persists its session id. A one-tool MCP endpoint on the daemon gives the process `send_message`. A command opens Ghostty on the session as the escape hatch.
 
@@ -14,7 +14,7 @@
 
 - Keep it simple; disturb Guaca as little as possible. No terminal emulator, PTY or console in the app.
 - Provider wire/SQLite spelling: `claudeCode` (serde `rename_all = "camelCase"` on `Provider`; `as_str` and `parse` must agree with it).
-- CLI argv per turn: `claude -p --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions --model <m>` plus `--session-id <uuid>` (new) or `--resume <id>` (stored), plus `--append-system-prompt <text>` on the first turn only, plus `--mcp-config <json>` when a bridge is configured. Never `--tools ""`, `--strict-mcp-config`, `--setting-sources ""`, `--disable-slash-commands`, `--no-session-persistence`.
+- CLI argv per turn: `claude -p --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions` plus `--session-id <uuid>` (new) or `--resume <id>` (stored), plus `--append-system-prompt <text>` on the first turn only, plus `--mcp-config <json>` when a bridge is configured. Never `--model` (Claude Code picks its own model, as in a terminal), never `--tools ""`, `--strict-mcp-config`, `--setting-sources ""`, `--disable-slash-commands`, `--no-session-persistence`.
 - `cost` is `None` for this provider; tokens are counted.
 - The subprocess's tool uses never enter `Completion.tool_calls`.
 - A `/clear` batch spawns nothing and clears the stored session; any other `/command` is forwarded unchanged.
@@ -332,3 +332,19 @@ Manual, against the native daemon, and recorded in the plan's commit message.
 - [ ] **Step 5:** Right-click an agent → "Resume in terminal": Ghostty opens on the session in its directory; the agent shows "In your terminal"; send it a message, it waits; close Ghostty; the message runs.
 - [ ] **Step 6:** Run the live test: `cargo test --manifest-path src-tauri/Cargo.toml --test claude_code -- --ignored`.
 - [ ] **Step 7:** Commit any fixes; `git log --oneline main..` is the deliverable.
+
+
+---
+
+### Task 10: No model field — the wrapper is around Claude Code
+
+Operator ruling (2026-11-01, after Tasks 1-3 landed): Guaca never chooses or passes a model for this provider. Remove what Tasks 1-2 added for it.
+
+**Files:**
+- Modify: `src-tauri/src/db/migrations.rs` (migration 66 loses the `claude_model` column — the branch has not shipped, so edit 66 in place), `src-tauri/src/db/store.rs` (`AGENT_COLUMNS`, `row_to_card`, insert, update, `new_card`), `src-tauri/src/domain/agent.rs` (`AgentCard.claude_model`, drafts, `own_model(ClaudeCode) => None` like `Claude`), `src-tauri/src/transfer.rs` allowlist, `src-tauri/src/commands.rs` duplicate, `src-tauri/src/config.rs` (`active_model(ClaudeCode)` returns `claude_code::MODEL_LABEL`), `src-tauri/src/llm/claude_code.rs` (`DEFAULT_MODEL` becomes `MODEL_LABEL: &str = "Claude Code's own model"`), `src/lib/types.ts`, `src/lib/providers.ts` (`ownModel` returns "" for claudeCode), `src/components/AgentEditor.tsx` (remove the Model input; keep Working directory and Session), the tests and fixtures that mention `claudeModel`/`claude_model`.
+- Test: existing tests updated; `config.rs` round-trip test asserts `active_model() == MODEL_LABEL`.
+
+- [ ] **Step 1:** Update the tests first (remove `claude_model` expectations, assert the label); run, see compile failures.
+- [ ] **Step 2:** Remove the field everywhere; `AGENT_COLUMNS` indexes become 25 (`cwd`), 26 (`claude_session`).
+- [ ] **Step 3:** Daemon build fmt/clippy/test and `pnpm check && pnpm typecheck && pnpm test` — PASS.
+- [ ] **Step 4:** Commit — `refactor(agents): Claude Code picks its own model`.

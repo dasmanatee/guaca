@@ -35,6 +35,7 @@
 //! it is why the token is per-workspace and rotatable rather than derived from
 //! anything longer-lived.
 
+mod bridge;
 mod live;
 
 use std::net::SocketAddr;
@@ -220,6 +221,10 @@ pub async fn bind(settings: Settings) -> Result<Bound, String> {
         .route("/v1/host", get(host_status))
         .route("/v1/host/update", post(host_update))
         .route("/v1/call", post(call))
+        // Where a Claude Code session reaches its crew. The agent and the run
+        // are in the path because the session is told them by the turn that
+        // started it, and the relay checks one against the other.
+        .route("/v1/claude-code/mcp/:agent_id/:run_id", post(bridge::call))
         .route("/v1/events", get(events_socket))
         .route(
             "/events/:service/:topic",
@@ -289,6 +294,18 @@ pub async fn bind(settings: Settings) -> Result<Bound, String> {
         .await
         .map_err(|err| format!("could not listen on {}: {err}", settings.bind))?;
     let addr = listener.local_addr().map_err(|err| err.to_string())?;
+    // Where the address is real, which is after the bind: `0` asks for any
+    // port. A `claude` session runs on this same box, so an every-interface
+    // bind is reached on loopback.
+    let reach = if addr.ip().is_unspecified() {
+        SocketAddr::from(([127, 0, 0, 1], addr.port()))
+    } else {
+        addr
+    };
+    runtime.set_mcp_bridge(crate::llm::claude_code::Bridge {
+        url: format!("http://{reach}"),
+        token: token.to_string(),
+    });
     tracing::info!(%addr, agents = booted.started, "guacad ready");
     if settings.web.is_some() {
         // The token is already in this log from the run that generated it.
@@ -302,6 +319,15 @@ pub async fn bind(settings: Settings) -> Result<Bound, String> {
     }
 
     Ok(Bound { addr, agents: booted.started, listener, app, runtime })
+}
+
+impl Bound {
+    /// The runtime behind this host, for a test that has to put it in a state
+    /// no client can.
+    #[doc(hidden)]
+    pub fn runtime(&self) -> &crate::runtime::Runtime {
+        &self.runtime
+    }
 }
 
 /// The one link a browser needs, with the token where a browser keeps it.

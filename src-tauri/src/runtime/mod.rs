@@ -621,6 +621,60 @@ pub enum RuntimeError {
     EmptyAnswer,
 }
 
+/// Why a message a Claude Code session sent through the bridge did not go.
+///
+/// Each reaches the session's model as the tool's result, so each says what
+/// happened in words it can act on rather than as a transport failure it would
+/// retry.
+#[derive(Debug, thiserror::Error)]
+pub enum RelayError {
+    #[error(
+        "no Claude Code turn is running under run {run_id}. The message was not sent; it may \
+         have arrived after the turn ended."
+    )]
+    NoSuchRun { run_id: RunId },
+    #[error("run {run_id} belongs to another agent")]
+    WrongAgent { run_id: RunId },
+    #[error("send_message arguments were not understood: {0}")]
+    Arguments(String),
+}
+
+/// What a Claude Code turn would have handed `send_to_peers` had it dispatched
+/// the call itself, kept while its session runs so a call arriving over the
+/// bridge is sent as part of that turn.
+struct Relay {
+    agent_id: AgentId,
+    inbound_hop: u16,
+    cause: Option<MessageId>,
+    settled: bool,
+    /// Peers written to through the bridge, handed back to the turn when its
+    /// session ends.
+    addressed: HashSet<AgentId>,
+}
+
+/// A relay that is open, and closed when this is dropped.
+///
+/// The turn closes it by hand to read what was sent; this is for every way
+/// out of the stream call that does not get that far, so no run is left with
+/// a relay a late call could still send through.
+struct Relayed<'a> {
+    runtime: &'a Runtime,
+    agent_id: AgentId,
+    run_id: RunId,
+}
+
+impl Relayed<'_> {
+    fn close(self) -> HashSet<AgentId> {
+        self.runtime.close_relay(self.agent_id, self.run_id).unwrap_or_default()
+    }
+}
+
+impl Drop for Relayed<'_> {
+    fn drop(&mut self) {
+        self.runtime.close_relay(self.agent_id, self.run_id);
+    }
+}
+
 struct Inbox {
     tx: mpsc::UnboundedSender<Envelope>,
     /// Queue depth, so the sidebar can show a backlog without draining it.
@@ -747,6 +801,11 @@ struct Inner {
     /// server carrying the bridge is listening, and a session started before
     /// then runs without a way to message its crew rather than not at all.
     mcp_bridge: Mutex<Option<claude_code::Bridge>>,
+    /// The Claude Code turns whose sessions are running now, by run and then
+    /// by agent, so a call over the bridge can be sent as the turn that made
+    /// it. By agent too because a run is a whole cascade: two Claude Code
+    /// agents answering each other run their turns under the same one.
+    relays: Mutex<HashMap<RunId, HashMap<AgentId, Relay>>>,
     events: Arc<dyn EventSink>,
 }
 
@@ -860,6 +919,7 @@ impl Runtime {
                 live_actors: Arc::new(AtomicUsize::new(0)),
                 resuming: Mutex::new(HashMap::new()),
                 mcp_bridge: Mutex::new(None),
+                relays: Mutex::new(HashMap::new()),
                 events,
             }),
         }
@@ -1014,6 +1074,95 @@ impl Runtime {
 
     fn mcp_bridge(&self) -> Option<claude_code::Bridge> {
         self.inner.mcp_bridge.lock().clone()
+    }
+
+    fn open_relay(&self, run_id: RunId, relay: Relay) -> Relayed<'_> {
+        let agent_id = relay.agent_id;
+        self.inner.relays.lock().entry(run_id).or_default().insert(agent_id, relay);
+        Relayed { runtime: self, agent_id, run_id }
+    }
+
+    fn close_relay(&self, agent_id: AgentId, run_id: RunId) -> Option<HashSet<AgentId>> {
+        let mut relays = self.inner.relays.lock();
+        let open = relays.get_mut(&run_id)?;
+        let relay = open.remove(&agent_id);
+        if open.is_empty() {
+            relays.remove(&run_id);
+        }
+        relay.map(|relay| relay.addressed)
+    }
+
+    /// A relay as a turn with nothing behind it would open one, for a test
+    /// that cannot hold a real Claude Code session open.
+    #[doc(hidden)]
+    pub fn open_relay_for_tests(&self, agent_id: AgentId, run_id: RunId) {
+        self.inner.relays.lock().entry(run_id).or_default().insert(
+            agent_id,
+            Relay {
+                agent_id,
+                inbound_hop: 0,
+                cause: None,
+                settled: false,
+                addressed: HashSet::new(),
+            },
+        );
+    }
+
+    /// Sends what a Claude Code session asked for over the bridge, as the turn
+    /// running under `run_id` would have sent it, and says how it went in the
+    /// words `send_message` answers with everywhere else.
+    ///
+    /// The relay stays locked for the whole send. Nothing in it awaits, and it
+    /// is what makes a turn that closes its relay see every peer a call in
+    /// flight addressed rather than a send that lands after the turn has
+    /// counted. Bridge calls are paced by a model, so the one lock costs
+    /// nothing anybody waits on.
+    pub fn relay_send_message(
+        &self,
+        agent_id: AgentId,
+        run_id: RunId,
+        arguments: serde_json::Value,
+    ) -> Result<String, RelayError> {
+        let mut relays = self.inner.relays.lock();
+        let open = relays.get_mut(&run_id).ok_or(RelayError::NoSuchRun { run_id })?;
+        let relay = open.get_mut(&agent_id).ok_or(RelayError::WrongAgent { run_id })?;
+
+        let call = ToolCall {
+            id: String::new(),
+            name: tools::SEND_MESSAGE.to_string(),
+            arguments: arguments.to_string(),
+        };
+        let invocation =
+            tools::parse(&call, &[]).map_err(|err| RelayError::Arguments(err.to_string()))?;
+        let ToolInvocation::SendMessage { to, text, intent, files } = invocation else {
+            return Err(RelayError::Arguments("they did not describe a message".to_string()));
+        };
+        // The bridge does not offer `files`, and a model that sends them anyway
+        // must not be told the message went with them.
+        if !files.is_empty() {
+            return Err(RelayError::Arguments(
+                "files cannot be attached through this tool. Put what the recipient needs in \
+                 the text, and send again without `files`."
+                    .to_string(),
+            ));
+        }
+        let Some(card) = self.inner.store.get_agent(agent_id).ok().flatten() else {
+            return Err(RelayError::NoSuchRun { run_id });
+        };
+
+        let deliveries = self.send_to_peers(
+            &card,
+            run_id,
+            relay.inbound_hop,
+            relay.cause,
+            relay.settled,
+            &mut relay.addressed,
+            &to,
+            &text,
+            intent,
+            &[],
+        );
+        Ok(tools::render_deliveries(&deliveries))
     }
 
     pub(crate) fn hold_workspace_lease(&self, lease: std::fs::File) {
@@ -3270,9 +3419,20 @@ impl Runtime {
                     "turn tool definitions"
                 );
             }
+            // Open only while the session runs: a call over the bridge is this
+            // turn's send, and one arriving after it is nobody's.
+            let relay = session.is_some().then(|| {
+                self.open_relay(
+                    run_id,
+                    Relay { agent_id, inbound_hop, cause, settled, addressed: HashSet::new() },
+                )
+            });
             let completion = self
                 .stream_with_retries(&inference, &request, run_id, agent_id, Some(&mut stream))
                 .await;
+            if let Some(relay) = relay {
+                addressed.extend(relay.close());
+            }
 
             let completion = match completion {
                 Ok(Some(completion)) => completion,

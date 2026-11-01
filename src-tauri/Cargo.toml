@@ -115,6 +115,11 @@ name = "server"
 path = "tests/server.rs"
 required-features = ["server"]
 
+[[test]]
+name = "bridge"
+path = "tests/bridge.rs"
+required-features = ["server"]
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time", "test-util"] }

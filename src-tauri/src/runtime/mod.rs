@@ -675,6 +675,29 @@ impl Drop for Relayed<'_> {
     }
 }
 
+/// Why an agent's session cannot be opened in a terminal now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Busy {
+    /// The operator already has it open.
+    AlreadyOpen,
+    /// A turn is running or parked on the operator, and its program still
+    /// holds the session.
+    MidTurn,
+}
+
+impl Busy {
+    /// What the operator is told, and what to do about it.
+    pub fn sentence(self) -> &'static str {
+        match self {
+            Busy::AlreadyOpen => "This agent is already open in a terminal.",
+            Busy::MidTurn => {
+                "This agent is in the middle of a turn. Wait for it to finish, or stop it, then \
+                 resume."
+            }
+        }
+    }
+}
+
 struct Inbox {
     tx: mpsc::UnboundedSender<Envelope>,
     /// Queue depth, so the sidebar can show a backlog without draining it.
@@ -1567,11 +1590,11 @@ impl Runtime {
     }
 
     pub fn resume_agent(&self, id: AgentId) {
+        self.set_activity(id, Activity::Idle);
         let resume = { self.inner.inboxes.lock().get(&id).map(|inbox| inbox.resume.clone()) };
         if let Some(resume) = resume {
             resume.notify_waiters();
         }
-        self.set_activity(id, Activity::Idle);
     }
 
     /// Marks an agent paused. The actor parks at its next message boundary and
@@ -1584,32 +1607,45 @@ impl Runtime {
     /// terminal. The actor parks at its next message boundary, as a paused one
     /// does, and what arrives meanwhile queues.
     ///
-    /// False when it was already held, which is a second window on the same
-    /// session and the caller's to refuse.
-    pub fn enter_terminal(&self, id: AgentId) -> bool {
-        if !self.inner.in_terminal.lock().insert(id) {
-            return false;
+    /// Refused for a second window on the same session, and for an agent in
+    /// the middle of a turn: that turn's own `claude` is still writing the
+    /// session, and a turn parked on a permission request would lose the badge
+    /// that tells the operator to go and answer it. Both are read under the
+    /// activity lock the turn's state is written under, so a turn cannot be
+    /// seen idle here and be thinking by the time the flag is set.
+    pub fn enter_terminal(&self, id: AgentId) -> Result<(), Busy> {
+        {
+            let activity = self.inner.activity.lock();
+            if matches!(activity.get(&id), Some(Activity::Thinking | Activity::AwaitingApproval)) {
+                return Err(Busy::MidTurn);
+            }
+            if !self.inner.in_terminal.lock().insert(id) {
+                return Err(Busy::AlreadyOpen);
+            }
         }
         self.set_activity(id, Activity::InTerminal);
-        true
+        Ok(())
     }
 
     /// Lets an agent's inbox through again once its terminal has closed.
     ///
-    /// The flag goes first and the wake second: the actor re-reads the flag
-    /// after it has started waiting, so whichever side of the wake-up it is on
-    /// it sees the window closed.
+    /// The flag goes first, then the badge, then the wake: the actor re-reads
+    /// the flag after it has started waiting, so whichever side of the wake-up
+    /// it is on it sees the window closed, and the badge is put back before
+    /// the actor can mark itself thinking rather than after.
     pub fn leave_terminal(&self, id: AgentId) {
         if !self.inner.in_terminal.lock().remove(&id) {
             return;
         }
+        self.idle(id);
         let resume = { self.inner.inboxes.lock().get(&id).map(|inbox| inbox.resume.clone()) };
         if let Some(resume) = resume {
             resume.notify_waiters();
         }
-        self.idle(id);
     }
 
+    /// Whether the operator has this agent's session open in a terminal right
+    /// now, which is also whether its inbox is held.
     pub fn in_terminal(&self, id: AgentId) -> bool {
         self.inner.in_terminal.lock().contains(&id)
     }
@@ -8368,6 +8404,15 @@ mod tests {
         ] if text == "a" && name == "Bash" && call_id == "1"),
             "{seen:?}"
         );
+    }
+
+    #[test]
+    fn a_terminal_refused_mid_turn_says_to_wait_or_stop_it() {
+        assert_eq!(
+            Busy::MidTurn.sentence(),
+            "This agent is in the middle of a turn. Wait for it to finish, or stop it, then resume."
+        );
+        assert_eq!(Busy::AlreadyOpen.sentence(), "This agent is already open in a terminal.");
     }
 
     fn card(lifecycle: Lifecycle, sandbox: &str) -> AgentCard {

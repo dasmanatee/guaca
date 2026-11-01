@@ -24,7 +24,7 @@ use guac_lib::domain::ids::{AgentId, RunId};
 use guac_lib::llm::claude_code::{Session, CLEARED};
 use guac_lib::llm::openrouter::{ChatMessage, ChatRequest, LlmClient, LlmError};
 use guac_lib::runtime::events::{Activity, RecordingSink, UiEvent};
-use guac_lib::runtime::{OnDisk, Runtime};
+use guac_lib::runtime::{Busy, OnDisk, Runtime};
 
 /// What the test says, so the stdin the stand-in recorded can be checked for
 /// it.
@@ -73,6 +73,7 @@ fn write_stand_in(dir: &Path) {
              printf '%s\\n' '{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"starting\"}}]}}}}'\n\
              exit 0 ;;\n\
          esac\n\
+         case \"$input\" in *'take-your-time'*) sleep 2 ;; esac\n\
          echo 'hook_started: SessionStart'\n\
          printf '%s\\n' '{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"fixed-session\"}}'\n\
          printf '%s\\n' '{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",\"input\":{{\"command\":\"echo hi\"}}}}]}},\"session_id\":\"fixed-session\"}}'\n\
@@ -470,8 +471,12 @@ async fn an_agent_open_in_a_terminal_holds_its_inbox_until_the_window_closes() {
     let _ = stand_in();
     let crew = crew();
 
-    assert!(crew.runtime.enter_terminal(crew.agent));
-    assert!(!crew.runtime.enter_terminal(crew.agent), "one window per session");
+    assert_eq!(crew.runtime.enter_terminal(crew.agent), Ok(()));
+    assert_eq!(
+        crew.runtime.enter_terminal(crew.agent),
+        Err(Busy::AlreadyOpen),
+        "one window per session"
+    );
     assert!(crew.runtime.in_terminal(crew.agent));
 
     // Two programs writing one session is how a session is corrupted, so
@@ -492,4 +497,30 @@ async fn an_agent_open_in_a_terminal_holds_its_inbox_until_the_window_closes() {
     crew.settle(run).await;
     assert_eq!(crew.session().as_deref(), Some("fixed-session"), "{:?}", crew.channel());
     assert!(recorded(&stand_in(), "stdin").contains("while you were away"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_a_turn_is_still_writing_is_not_opened_in_a_terminal() {
+    let _records = RECORDS.lock().await;
+    let _ = stand_in();
+    let crew = crew();
+
+    let run = crew.ask("take-your-time");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while crew.runtime.activity_snapshot().get(&crew.agent) != Some(&Activity::Thinking) {
+        assert!(std::time::Instant::now() < deadline, "the turn never started");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    assert_eq!(crew.runtime.enter_terminal(crew.agent), Err(Busy::MidTurn));
+    assert!(!crew.runtime.in_terminal(crew.agent));
+    assert_eq!(
+        crew.runtime.activity_snapshot().get(&crew.agent),
+        Some(&Activity::Thinking),
+        "the badge is the turn's, not the terminal's"
+    );
+
+    crew.settle(run).await;
+    assert_eq!(crew.runtime.enter_terminal(crew.agent), Ok(()), "free once the turn is over");
+    crew.runtime.leave_terminal(crew.agent);
 }

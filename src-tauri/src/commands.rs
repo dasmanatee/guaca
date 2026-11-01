@@ -44,7 +44,7 @@ use crate::e2b::{Computer, E2bClient, E2bError};
 use crate::kernel::{Browser, KernelClient, KernelError};
 use crate::llm::catalog::{Catalog, CatalogError, RankedModel};
 use crate::runtime::events::{Activity, UiEvent};
-use crate::runtime::Runtime;
+use crate::runtime::{Busy, Runtime};
 use crate::subscription::{DeviceCode, SigninError, Status, Subscription};
 
 /// How the operator's own browser is opened, which is a property of the host.
@@ -1980,7 +1980,7 @@ fn refusal(
         ));
     }
     if open {
-        return Some("This agent is already open in a terminal.".into());
+        return Some(Busy::AlreadyOpen.sentence().into());
     }
     None
 }
@@ -2003,12 +2003,15 @@ pub async fn resume_in_terminal(state: &AppState, id: AgentId) -> Reply<()> {
     let (Some(ghostty), Some(session)) = (ghostty, card.claude_session) else {
         unreachable!("refusal answers for a missing program and a missing session");
     };
-    // Two clicks can both pass the check above; only one of them gets the window.
-    if !runtime.enter_terminal(id) {
-        return Err(CommandError::new("terminal", "This agent is already open in a terminal."));
-    }
+    // Whether a turn holds the session is only known under the lock the flag is
+    // set under, and two clicks can both pass the check above.
+    runtime.enter_terminal(id).map_err(|busy| CommandError::new("terminal", busy.sentence()))?;
 
     let spawned = tokio::process::Command::new(&ghostty)
+        // A single-instance Ghostty hands the window to the one already running
+        // and exits at once, which would release the inbox with the window
+        // still open. Its own process makes its life the window's.
+        .arg("--gtk-single-instance=false")
         .arg(format!("--working-directory={}", card.cwd))
         .args(["-e", crate::llm::claude::PROGRAM, "--resume", &session])
         .stdin(std::process::Stdio::null())

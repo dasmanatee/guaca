@@ -14,9 +14,9 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{InferenceConfig, Provider};
-use crate::llm::claude;
 use crate::llm::codex;
 use crate::llm::sse::SseDecoder;
+use crate::llm::{claude, claude_code};
 use crate::subscription::Subscription;
 
 // ---- request types -------------------------------------------------------
@@ -634,6 +634,10 @@ impl LlmClient {
 
         if cfg.provider == Provider::Claude {
             return claude::stream(cfg, request, &mut on_token).await;
+        }
+
+        if cfg.provider == Provider::ClaudeCode {
+            return claude_code::stream(cfg, request, &mut on_token).await;
         }
 
         let url = cfg.chat_completions_url();

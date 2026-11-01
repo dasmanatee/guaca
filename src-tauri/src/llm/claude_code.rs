@@ -256,7 +256,7 @@ impl Fold {
                 format!("Compacted the session: {before} → {after} tokens.")
             }
             ("success", None) => "Compacted the session.".to_string(),
-            (other, _) => format!("Compaction failed: {other}."),
+            (other, _) => format!("Compaction failed: {}.", other.trim_end_matches('.')),
         })
     }
 }
@@ -430,12 +430,19 @@ pub fn fold<F: FnMut(Token<'_>)>(
                 // Exactly one answer to a local command, by how much it knows:
                 // the result's verdict, then what the command printed, then this
                 // app's account of a compaction it saw happen.
-                let answer = if frame.local_command.is_some() && !said.is_empty() {
-                    Some(said)
-                } else {
+                if frame.local_command.is_some() && !said.is_empty() {
+                    // Replaces rather than adds to: the program may already
+                    // have echoed the same verdict as a synthetic assistant
+                    // message. That echo was drawn, so only an empty turn
+                    // draws this one.
+                    if state.content.is_empty() {
+                        state.say(&said, on_token);
+                    } else {
+                        state.content = said;
+                    }
+                } else if let Some(answer) =
                     state.local_stdout.take().or_else(|| state.compaction())
-                };
-                if let Some(answer) = answer {
+                {
                     state.say(&answer, on_token);
                 }
             }
@@ -444,7 +451,16 @@ pub fn fold<F: FnMut(Token<'_>)>(
         }
         Some("system") => {
             if let Some(ended) = event.get("compact_result") {
-                state.compacted = Some(ended.as_str().unwrap_or("no reason given").to_string());
+                // The reason when the program gives one, the bare verdict when
+                // it does not.
+                let reason = event.get("compact_error").and_then(serde_json::Value::as_str);
+                let ended = match (ended.as_str(), reason) {
+                    (Some("success"), _) => "success",
+                    (_, Some(reason)) => reason,
+                    (Some(verdict), None) => verdict,
+                    (None, None) => "no reason given",
+                };
+                state.compacted = Some(ended.to_string());
             }
             if let Some(meta) = event.get("compact_metadata") {
                 let count = |key: &str| meta.get(key).and_then(serde_json::Value::as_u64);
@@ -901,6 +917,30 @@ mod tests {
         let (state, seen) = fold_all(&[STDOUT, &refused]);
         assert_eq!(state.content, "Not enough messages to compact.");
         assert_eq!(seen, ["text:Not enough messages to compact."]);
+    }
+
+    /// A `/compact` with nothing to compact, exactly as 2.1.316 writes it: the
+    /// verdict three times over, once as a synthetic assistant message.
+    const NOTHING_TO_COMPACT: [&str; 4] = [
+        COMPACTING,
+        r#"{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"Not enough messages to compact.","session_id":"s-1"}"#,
+        r#"{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Not enough messages to compact."}]}}"#,
+        r#"{"type":"result","subtype":"success","is_error":false,"session_id":"s-1","result":"Not enough messages to compact.","local_command":"compact"}"#,
+    ];
+
+    #[test]
+    fn a_local_commands_result_replaces_the_synthetic_echo() {
+        let (state, seen) = fold_all(&NOTHING_TO_COMPACT);
+        assert_eq!(state.content, "Not enough messages to compact.");
+        // Drawn once, by the echo; the result corrects what is kept, not what
+        // was already shown.
+        assert_eq!(seen, ["text:Not enough messages to compact."]);
+    }
+
+    #[test]
+    fn a_failed_compaction_gives_the_programs_reason() {
+        let (state, _) = fold_all(&[NOTHING_TO_COMPACT[0], NOTHING_TO_COMPACT[1], COMMAND_DONE]);
+        assert_eq!(state.content, "Compaction failed: Not enough messages to compact.");
     }
 
     #[test]

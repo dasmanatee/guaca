@@ -3345,6 +3345,10 @@ impl Runtime {
             surfaces,
             modalities,
         );
+        // Where this turn's own messages begin: the one `build_messages` folded
+        // the batch into, and everything after it. A Claude Code session is
+        // handed these and nothing earlier, because it already holds the rest.
+        let mut unsent = messages.len() - usize::from(batch.iter().any(prompt::carries_anything));
         // After assembly, because what a file becomes depends on things the
         // prompt cannot reach: bytes on disk, a model that may not be able to
         // see one, and a machine that may have to be started to hold them.
@@ -3459,6 +3463,7 @@ impl Runtime {
                     url: format!("{}/v1/claude-code/mcp/{agent_id}/{run_id}", bridge.url),
                     token: bridge.token,
                 }),
+                inbound: Vec::new(),
             }
         });
 
@@ -3501,6 +3506,17 @@ impl Runtime {
                 }
             }
 
+            if let Some(session) = &mut session {
+                // Only what arrived since the last round: a round the promise
+                // check sends back is answered by the same session, which
+                // already read the round before it.
+                session.inbound = messages[unsent..]
+                    .iter()
+                    .filter(|message| matches!(message, ChatMessage::User { .. }))
+                    .cloned()
+                    .collect();
+                unsent = messages.len();
+            }
             let request = ChatRequest {
                 claude_code: session.clone(),
                 model: model.clone(),

@@ -1043,6 +1043,12 @@ fn is_empty(envelope: &Envelope) -> bool {
     envelope.plain_text().is_empty() && attachments(envelope).is_empty()
 }
 
+/// Whether [`build_messages`] gives an envelope a line of its own, which is how
+/// the runtime finds where the batch it folded begins.
+pub fn carries_anything(envelope: &Envelope) -> bool {
+    !is_empty(envelope)
+}
+
 /// A message's text with a line naming each file it carried.
 ///
 /// The line is the only way a file appears in a message at all: what the file

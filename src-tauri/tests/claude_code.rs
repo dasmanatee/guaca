@@ -1,6 +1,6 @@
 //! Whether a turn set to Claude Code is answered by a `claude` session.
 //!
-//! The fold, the argument vector and the batch are covered beside them in
+//! The fold, the argument vector and the payload are covered beside them in
 //! `llm/claude_code.rs` without spawning anything. What this suite is for is
 //! the seam those tests cannot see: that a config naming this provider reaches
 //! that transport, that the process is started where the agent works and with
@@ -118,6 +118,7 @@ fn asking(
             resume: resume.map(str::to_string),
             system_prompt: system_prompt.map(str::to_string),
             bridge: None,
+            inbound: vec![ChatMessage::user(format!("[OPERATOR]\n{said}"))],
         }),
         ..ChatRequest::default()
     }
@@ -393,6 +394,27 @@ async fn a_first_turn_stores_the_session_and_a_second_resumes_it() {
     assert!(!args.contains(&"--append-system-prompt"), "the session already has it: {second}");
     assert!(recorded(&beside, "stdin").contains("and again"));
     assert!(!recorded(&beside, "stdin").contains(MARKER), "the session already read that turn");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_turns_request_is_not_sent_again() {
+    // A turn that fails saves no reply, so the request it was answering is
+    // still the last thing in the channel. The session was handed it already,
+    // and handing it over again would run it twice.
+    let _records = RECORDS.lock().await;
+    let beside = stand_in();
+    let crew = crew();
+
+    let run = crew.ask("die-midway");
+    crew.settle(run).await;
+    assert!(recorded(&beside, "stdin").contains("die-midway"));
+
+    let run = crew.ask("the second request");
+    crew.settle(run).await;
+
+    let stdin = recorded(&beside, "stdin");
+    assert!(stdin.contains("the second request"), "{stdin}");
+    assert!(!stdin.contains("die-midway"), "the failed turn's request was sent again: {stdin}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

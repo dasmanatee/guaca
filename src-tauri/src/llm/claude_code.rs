@@ -37,6 +37,14 @@ pub struct Session {
     /// First turn only.
     pub system_prompt: Option<String>,
     pub bridge: Option<Bridge>,
+    /// What this round received and nothing before it, which is what goes on
+    /// stdin.
+    ///
+    /// Named by the runtime rather than read off the request's history,
+    /// because the history cannot say what the session has seen: a turn that
+    /// was stopped or failed saved no reply, and everything after the last
+    /// reply would hand the session a request it already has and run it twice.
+    pub inbound: Vec<ChatMessage>,
 }
 
 /// Where the session reaches Guaca's own tools, and the credential for it.
@@ -151,19 +159,6 @@ pub fn argv(session: &Session) -> Vec<String> {
     }
 
     args
-}
-
-/// The messages after the last assistant turn, which is what the session has
-/// not seen.
-///
-/// Everything before it is already in the session's own memory, and sending it
-/// again would be the session reading its whole history twice a turn.
-pub fn batch(messages: &[ChatMessage]) -> &[ChatMessage] {
-    let after = messages
-        .iter()
-        .rposition(|message| matches!(message, ChatMessage::Assistant { .. }))
-        .map_or(0, |at| at + 1);
-    &messages[after..]
 }
 
 /// The slash command an operator line carries, without the label the runtime
@@ -491,7 +486,7 @@ pub async fn stream<F: FnMut(Token<'_>)>(
         });
     };
 
-    let batch = batch(&request.messages);
+    let batch = session.inbound.as_slice();
     if is_clear(batch) {
         return Ok(Completion {
             content: CLEARED.into(),
@@ -654,6 +649,7 @@ mod tests {
             resume: None,
             system_prompt: None,
             bridge: None,
+            inbound: vec![ChatMessage::user("hello")],
         }
     }
 
@@ -775,7 +771,11 @@ mod tests {
         // have been refused for that instead.
         let request = ChatRequest {
             messages: vec![ChatMessage::system("you are Dana"), ChatMessage::user("/clear")],
-            claude_code: Some(Session { cwd: "/nowhere/at/all".into(), ..session() }),
+            claude_code: Some(Session {
+                cwd: "/nowhere/at/all".into(),
+                inbound: vec![ChatMessage::user("/clear")],
+                ..session()
+            }),
             ..ChatRequest::default()
         };
         let completion = stream(&InferenceConfig::default(), &request, &mut |_| {}).await.unwrap();
@@ -948,21 +948,6 @@ mod tests {
         let (state, seen) = fold_all(&[SUMMARY]);
         assert_eq!(state.content, "");
         assert!(seen.is_empty(), "{seen:?}");
-    }
-
-    #[test]
-    fn batch_is_everything_after_the_last_assistant_turn() {
-        let messages = vec![
-            ChatMessage::system("you are Dana"),
-            ChatMessage::user("one"),
-            ChatMessage::assistant("did one"),
-            ChatMessage::user("two"),
-            ChatMessage::user("three"),
-        ];
-        assert_eq!(batch(&messages), &messages[3..]);
-
-        let first = vec![ChatMessage::system("you are Dana"), ChatMessage::user("one")];
-        assert_eq!(batch(&first), &first[..]);
     }
 
     #[test]

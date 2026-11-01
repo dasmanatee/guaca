@@ -10,10 +10,12 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use serde::Deserialize;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::config::InferenceConfig;
 use crate::domain::envelope::{Part, ToolOutcome};
@@ -70,6 +72,10 @@ pub const MCP_SEND: &str = "mcp__guaca__send_message";
 /// tool it runs. An hour of nothing at all is a process that is stuck, and the
 /// operator's plan is still open under it.
 const IDLE: Duration = Duration::from_secs(60 * 60);
+
+/// How long the no-answer report waits for stderr to close once the program
+/// has exited. `stream` says what can hold it open.
+const STDERR_GRACE: Duration = Duration::from_secs(3);
 
 /// How much of a tool's output is kept on its chip. The session holds the
 /// whole of it; the transcript only has to say what happened.
@@ -434,8 +440,9 @@ pub async fn stream<F: FnMut(Token<'_>)>(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         // What a stop does to a turn in flight: the runtime drops this future
-        // and the drop takes the session's process, and whatever it was
-        // running, with it.
+        // and the drop kills the session's process. Only that process: a
+        // command it started is in the same process group and is not signaled,
+        // so a long build the session began can outlive the stop.
         .kill_on_drop(true)
         .spawn()
         .map_err(|err| match err.kind() {
@@ -462,13 +469,21 @@ pub async fn stream<F: FnMut(Token<'_>)>(
     // Drained as it arrives rather than after: an hour-long session that fills
     // the pipe with warnings would otherwise block on its next one and look
     // exactly like a session that is thinking.
+    // Kept in a buffer shared with the reader rather than returned by it, so
+    // that what arrived is still there when the reader is given up on below.
     let stderr = child.stderr.take();
-    let complaints = tokio::spawn(async move {
-        let mut said = String::new();
-        if let Some(stderr) = stderr {
-            let _ = BufReader::new(stderr).read_to_string(&mut said).await;
+    let complaints = Arc::new(Mutex::new(String::new()));
+    let mut drain = tokio::spawn({
+        let complaints = Arc::clone(&complaints);
+        async move {
+            let Some(stderr) = stderr else { return };
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let mut said = complaints.lock();
+                said.push_str(&line);
+                said.push('\n');
+            }
         }
-        said
     });
 
     let stdout = child.stdout.take().ok_or(LlmError::ProgramFailed {
@@ -507,8 +522,15 @@ pub async fn stream<F: FnMut(Token<'_>)>(
     // is. The commonest cause is a stored session the program no longer has,
     // and its own words say so.
     if !state.answered {
-        let said = complaints.await.unwrap_or_default();
-        let said = said.trim();
+        // Bounded, because the end of the pipe is not the end of the program.
+        // The session's MCP servers and the commands it ran inherit its stderr,
+        // which this provider allows on purpose, and one left behind holds the
+        // pipe open after the program is gone. What was read by then is the
+        // program's own account, and it is enough.
+        if tokio::time::timeout(STDERR_GRACE, &mut drain).await.is_err() {
+            drain.abort();
+        }
+        let said = complaints.lock().trim().to_string();
         let code = status
             .and_then(|s| s.code())
             .map(|c| format!("exit {c}"))
@@ -519,7 +541,7 @@ pub async fn stream<F: FnMut(Token<'_>)>(
             message: format!("{PROGRAM} ended without answering ({detail})"),
         });
     }
-    complaints.abort();
+    drain.abort();
 
     if let Some(said) = state.failed {
         return Err(LlmError::ProgramFailed { program: PROGRAM, message: said });
@@ -684,6 +706,7 @@ mod tests {
         let err = stream(&InferenceConfig::default(), &request, &mut |_| {}).await.unwrap_err();
         assert!(matches!(err, LlmError::ProgramFailed { .. }), "{err}");
         assert!(err.to_string().contains("/nowhere/at/all"), "{err}");
+        assert!(err.to_string().contains("Edit the agent"), "{err}");
     }
 
     #[test]

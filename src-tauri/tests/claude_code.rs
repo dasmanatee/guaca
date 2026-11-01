@@ -59,6 +59,10 @@ fn write_stand_in(dir: &Path) {
            *' --resume missing '*) echo 'No conversation found with session ID: missing' >&2; exit 1 ;;\n\
          esac\n\
          case \"$input\" in\n\
+           *'leave-behind'*)\n\
+             echo 'lost its MCP server' >&2\n\
+             sleep 30 </dev/null >/dev/null &\n\
+             exit 2 ;;\n\
            *'die-midway'*)\n\
              printf '%s\\n' '{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"text\",\"text\":\"starting\"}}]}}}}'\n\
              exit 0 ;;\n\
@@ -151,6 +155,35 @@ async fn a_program_that_dies_midway_reports_its_exit() {
     let said = err.to_string();
     assert!(said.contains("ended without answering"), "{said}");
     assert!(said.contains("exit 0"), "{said}");
+}
+
+#[tokio::test]
+async fn a_program_that_leaves_a_process_holding_stderr_still_reports() {
+    // The session may start the operator's MCP servers and run commands, and
+    // those inherit its stderr. One left behind keeps the pipe open after the
+    // program itself is gone, and the turn must not wait for it.
+    let _records = RECORDS.lock().await;
+    stand_in();
+    let cwd = tempfile::tempdir().unwrap();
+
+    let started = std::time::Instant::now();
+    let err = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        LlmClient::new().unwrap().stream_chat(
+            &on_claude_code(),
+            &asking(cwd.path(), None, None, "leave-behind"),
+            |_| {},
+        ),
+    )
+    .await
+    .expect("the report must not wait on a process the program left behind")
+    .expect_err("a stream with no result frame is not an answer");
+
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    let said = err.to_string();
+    assert!(said.contains("exit 2"), "{said}");
+    // What it wrote before it went is still the account of it.
+    assert!(said.contains("lost its MCP server"), "{said}");
 }
 
 #[tokio::test]

@@ -13,12 +13,18 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use guac_lib::config::{InferenceConfig, Provider};
-use guac_lib::domain::envelope::Part;
-use guac_lib::domain::ids::AgentId;
-use guac_lib::llm::claude_code::Session;
+use guac_lib::config::{AppConfig, InferenceConfig, Provider};
+use guac_lib::db::Store;
+use guac_lib::domain::agent::CleanDraft;
+use guac_lib::domain::envelope::{Envelope, Part};
+use guac_lib::domain::group::{CleanGroup, InferenceOverrides};
+use guac_lib::domain::ids::{AgentId, RunId};
+use guac_lib::llm::claude_code::{Session, CLEARED};
 use guac_lib::llm::openrouter::{ChatMessage, ChatRequest, LlmClient, LlmError};
+use guac_lib::runtime::events::{RecordingSink, UiEvent};
+use guac_lib::runtime::{OnDisk, Runtime};
 
 /// What the test says, so the stdin the stand-in recorded can be checked for
 /// it.
@@ -245,6 +251,184 @@ async fn a_second_turn_resumes_and_sends_no_system_prompt() {
     assert!(!args.contains(&"--session-id"), "{argv}");
     // Asked for on the request and still not passed: the session chooses.
     assert!(!args.contains(&"--model"), "{argv}");
+}
+
+/// One agent in a group set to Claude Code, working in a folder of its own,
+/// with the whole runtime around it.
+///
+/// The app is left on an endpoint that is not listening, so a turn that
+/// resolved the app's provider instead of the group's fails rather than
+/// passing by accident.
+struct Crew {
+    runtime: Runtime,
+    sink: Arc<RecordingSink>,
+    agent: AgentId,
+    _cwd: tempfile::TempDir,
+    _dir: tempfile::TempDir,
+}
+
+fn crew() -> Crew {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("guac.db")).unwrap();
+    let group = store
+        .create_group(&CleanGroup {
+            name: "Coders".into(),
+            inference: Some(InferenceOverrides {
+                provider: Some(Provider::ClaudeCode),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .unwrap()
+        .id;
+    let agent = store
+        .create_agent(&CleanDraft {
+            group_id: Some(group),
+            name: "Dana".into(),
+            avatar: "avocado".into(),
+            color: "#7fb069".into(),
+            model: String::new(),
+            subscription_model: None,
+            cwd: Some(cwd.path().display().to_string()),
+            reasoning_effort: None,
+            system_prompt: "You are Dana.".into(),
+            skills: Vec::new(),
+        })
+        .unwrap()
+        .id;
+
+    let config = AppConfig {
+        version: guac_lib::config::CURRENT_VERSION,
+        inference: InferenceConfig {
+            base_url: "http://127.0.0.1:1/v1".into(),
+            default_model: "endpoint/model-that-would-fail".into(),
+            request_timeout_secs: 10,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let sink = RecordingSink::new();
+    let runtime = Runtime::new(
+        store,
+        LlmClient::new().unwrap(),
+        config,
+        OnDisk::under(dir.path()),
+        sink.clone(),
+    );
+    runtime.start_all().unwrap();
+    Crew { runtime, sink, agent, _cwd: cwd, _dir: dir }
+}
+
+impl Crew {
+    fn ask(&self, text: &str) -> RunId {
+        self.runtime.send_from_human(self.agent, text).unwrap()
+    }
+
+    fn session(&self) -> Option<String> {
+        self.runtime.store().get_agent(self.agent).unwrap().unwrap().claude_session
+    }
+
+    fn channel(&self) -> Vec<Envelope> {
+        self.runtime.store().channel_messages(self.agent, 50).unwrap()
+    }
+
+    /// Waits for a run to go quiet.
+    async fn settle(&self, run: RunId) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let settled = self
+                .sink
+                .count_of(|e| matches!(e, UiEvent::RunSettled { run_id, .. } if *run_id == run));
+            if settled > 0 {
+                // Let the last write land before anything reads the store.
+                tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "run never settled: {:?}",
+                self.channel().iter().map(|m| &m.parts).collect::<Vec<_>>()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_first_turn_stores_the_session_and_a_second_resumes_it() {
+    let _records = RECORDS.lock().await;
+    let beside = stand_in();
+    let crew = crew();
+
+    let run = crew.ask(MARKER);
+    crew.settle(run).await;
+
+    assert_eq!(crew.session().as_deref(), Some("fixed-session"), "{:?}", crew.channel());
+    let first = recorded(&beside, "argv");
+    assert!(first.lines().any(|a| a == "--session-id"), "{first}");
+    assert!(first.lines().any(|a| a == "--append-system-prompt"), "{first}");
+    // The prompt the runtime built for this agent, and how to reach its crew.
+    assert!(first.contains("You are Dana."), "{first}");
+    assert!(first.contains("call the send_message tool your guaca MCP server provides"), "{first}");
+    assert!(recorded(&beside, "stdin").contains(MARKER));
+    // The session's own work is on the turn's record, where the operator
+    // reads what an agent did.
+    let channel = crew.channel();
+    assert!(
+        channel
+            .iter()
+            .flat_map(|m| &m.parts)
+            .any(|p| matches!(p, Part::ToolCall { name, .. } if name == "Bash")),
+        "{channel:?}"
+    );
+
+    let run = crew.ask("and again");
+    crew.settle(run).await;
+
+    let second = recorded(&beside, "argv");
+    let args: Vec<&str> = second.lines().collect();
+    assert!(args.windows(2).any(|w| w == ["--resume", "fixed-session"]), "{second}");
+    assert!(!args.contains(&"--append-system-prompt"), "the session already has it: {second}");
+    assert!(recorded(&beside, "stdin").contains("and again"));
+    assert!(!recorded(&beside, "stdin").contains(MARKER), "the session already read that turn");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_clear_forgets_the_session_without_running_the_program() {
+    let _records = RECORDS.lock().await;
+    let beside = stand_in();
+    let crew = crew();
+    crew.runtime.store().set_claude_session(crew.agent, Some("fixed-session")).unwrap();
+    let _ = std::fs::remove_file(beside.join("argv"));
+
+    let run = crew.ask("/clear");
+    crew.settle(run).await;
+
+    assert_eq!(crew.session(), None);
+    assert!(!beside.join("argv").exists(), "the program was started for a /clear");
+    let last = crew.channel().into_iter().last().unwrap();
+    assert_eq!(last.plain_text(), CLEARED);
+    assert!(crew.sink.count_of(|e| matches!(e, UiEvent::AgentsChanged)) > 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_claude_code_turn_is_offered_no_tools() {
+    // Guaca's tools are the session's to reach through the bridge, not a list
+    // the runtime hands it: offering them would also restrict the session's
+    // own.
+    let _records = RECORDS.lock().await;
+    let beside = stand_in();
+    let crew = crew();
+
+    let run = crew.ask(MARKER);
+    crew.settle(run).await;
+
+    let argv = recorded(&beside, "argv");
+    for restriction in ["--tools", "--allowedTools", "--disallowedTools"] {
+        assert!(!argv.lines().any(|a| a == restriction), "{restriction} in {argv}");
+    }
+    assert_eq!(crew.session().as_deref(), Some("fixed-session"), "{:?}", crew.channel());
 }
 
 /// The live half: whether the real program still accepts this command line,

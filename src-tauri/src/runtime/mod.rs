@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::{mpsc, Notify};
 
-use crate::config::{AppConfig, InferenceConfig};
+use crate::config::{AppConfig, InferenceConfig, Provider};
 
 /// What a page is labeled as when it reaches the model.
 ///
@@ -466,6 +466,7 @@ use crate::domain::routine::{EventTrigger, Routine, RunKind};
 use crate::domain::signin::{self, BrowserState, Signin, Surface};
 use crate::domain::worknote;
 use crate::files::FileStore;
+use crate::llm::claude_code;
 use crate::llm::modality::{self, Modalities};
 use crate::llm::openrouter::{ChatMessage, ChatRequest, LlmClient, LlmError, Token, ToolCall};
 use crate::llm::tools::{self, Delivery, ToolInvocation};
@@ -742,6 +743,10 @@ struct Inner {
     /// the records of what each had done before it stopped. Filled once at
     /// boot by [`Runtime::pick_up`] and emptied by the turns themselves.
     resuming: Mutex<HashMap<MessageId, Vec<MessageId>>>,
+    /// Where a Claude Code session reaches Guaca's own tools. Absent until the
+    /// server carrying the bridge is listening, and a session started before
+    /// then runs without a way to message its crew rather than not at all.
+    mcp_bridge: Mutex<Option<claude_code::Bridge>>,
     events: Arc<dyn EventSink>,
 }
 
@@ -854,6 +859,7 @@ impl Runtime {
                 modalities: modality::Registry::new(),
                 live_actors: Arc::new(AtomicUsize::new(0)),
                 resuming: Mutex::new(HashMap::new()),
+                mcp_bridge: Mutex::new(None),
                 events,
             }),
         }
@@ -996,6 +1002,18 @@ impl Runtime {
 
     pub fn webhook_port(&self) -> u16 {
         self.inner.webhook_port.load(Ordering::SeqCst)
+    }
+
+    /// Where Claude Code sessions reach the bridge, and the token it checks.
+    ///
+    /// The base only: each turn's URL names its agent and run, so the bridge
+    /// can tell who is sending without trusting what the session says.
+    pub fn set_mcp_bridge(&self, bridge: claude_code::Bridge) {
+        *self.inner.mcp_bridge.lock() = Some(bridge);
+    }
+
+    fn mcp_bridge(&self) -> Option<claude_code::Bridge> {
+        self.inner.mcp_bridge.lock().clone()
     }
 
     pub(crate) fn hold_workspace_lease(&self, lease: std::fs::File) {
@@ -3157,10 +3175,44 @@ impl Runtime {
         //
         // Built once: nothing it is made from changes inside a turn, and an
         // errand is offered this same list less what it is never given.
-        let offered: Vec<crate::llm::openrouter::ToolSpec> = tools::plugin_specs(&plugins)
-            .into_iter()
-            .chain(tools::specs(surfaces, modalities))
-            .collect();
+        //
+        // Empty for a Claude Code session, which keeps its own tools and reaches
+        // Guaca's through the bridge: it runs them itself and never hands the
+        // runtime a call to dispatch.
+        let offered: Vec<crate::llm::openrouter::ToolSpec> =
+            if inference.provider == Provider::ClaudeCode {
+                Vec::new()
+            } else {
+                tools::plugin_specs(&plugins)
+                    .into_iter()
+                    .chain(tools::specs(surfaces, modalities))
+                    .collect()
+            };
+
+        // The prompt goes on the command line once, when the session is new; a
+        // resumed session already has it, and the batch alone is what it has
+        // not read.
+        let mut session = (inference.provider == Provider::ClaudeCode).then(|| {
+            let system = match messages.first() {
+                Some(ChatMessage::System { content }) => content.as_str(),
+                _ => "",
+            };
+            claude_code::Session {
+                agent_id,
+                cwd: card.cwd.clone().into(),
+                resume: card.claude_session.clone(),
+                system_prompt: card.claude_session.is_none().then(|| {
+                    format!(
+                        "{system}\n\nTo reach a crewmate, call the send_message tool your guaca \
+                         MCP server provides."
+                    )
+                }),
+                bridge: self.mcp_bridge().map(|bridge| claude_code::Bridge {
+                    url: format!("{}/v1/claude-code/mcp/{agent_id}/{run_id}", bridge.url),
+                    token: bridge.token,
+                }),
+            }
+        });
 
         let max_rounds = limits.max_tool_rounds as usize;
         for round in 0..max_rounds {
@@ -3202,7 +3254,7 @@ impl Runtime {
             }
 
             let request = ChatRequest {
-                claude_code: None,
+                claude_code: session.clone(),
                 model: model.clone(),
                 messages: messages.clone(),
                 tools: offered.clone(),
@@ -3242,6 +3294,19 @@ impl Runtime {
             };
 
             self.count_tokens(&card, run_id, &model, completion.usage);
+            tool_parts.extend(completion.work.iter().cloned());
+            if let (Some(named), Some(session)) = (&completion.session, &mut session) {
+                let keep = (!named.is_empty()).then(|| named.clone());
+                if keep != session.resume {
+                    self.keep_claude_session(&card, keep.as_deref());
+                }
+                // A round the promise check sends back is the same session,
+                // not a second one named and prompted all over again.
+                if keep.is_some() {
+                    session.system_prompt = None;
+                }
+                session.resume = keep;
+            }
 
             if !completion.content.is_empty() {
                 if !collected_text.is_empty() {
@@ -5981,6 +6046,20 @@ impl Runtime {
             completion: usage.completion_tokens,
             cost: usage.cost,
         });
+    }
+
+    /// Stores the session a Claude Code turn named, or forgets it when the
+    /// operator cleared it.
+    ///
+    /// A write that fails costs the session's memory on the next turn, which
+    /// starts a fresh one, and not the reply this turn already has.
+    fn keep_claude_session(&self, card: &AgentCard, keep: Option<&str>) {
+        match self.inner.store.set_claude_session(card.id, keep) {
+            Ok(()) => self.inner.events.emit(UiEvent::AgentsChanged),
+            Err(err) => {
+                tracing::warn!(%err, agent = %card.name, "could not keep the Claude Code session")
+            }
+        }
     }
 
     /// Kills every sandbox this app made that no agent still refers to.

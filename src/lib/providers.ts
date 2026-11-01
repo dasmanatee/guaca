@@ -154,7 +154,7 @@ export function onOpenRouter(group: Group | undefined, settings: Settings | null
  * neither. An unknown provider is the default the backend has, a key.
  */
 export function ownModel(agent: AgentCard, provider: ProviderKind | null | undefined): string {
-  if (provider === "claude") return "";
+  if (provider === "claude" || provider === "claudeCode") return "";
   return (provider === "chatgpt" ? agent.subscriptionModel : agent.model).trim();
 }
 

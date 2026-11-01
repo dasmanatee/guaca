@@ -271,8 +271,9 @@ describe("who pays for a group's turns", () => {
     try {
       open();
       pane("Provider");
-      expect(screen.getByText("Not on a server")).toBeTruthy();
+      expect(screen.getAllByText("Not on a server")).toHaveLength(2);
       expect(screen.queryByRole("button", { name: "Use the Claude subscription" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Use Claude Code" })).toBeNull();
       expect(button(/LM Studio/).disabled).toBe(true);
       expect(button(/LM Studio/).textContent).toContain("Not from a server");
       expect(button(/Groq/).disabled).toBe(false);

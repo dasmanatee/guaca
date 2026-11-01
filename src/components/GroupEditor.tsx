@@ -329,10 +329,13 @@ export function GroupEditor({ group, onClose, onSection }: Props) {
       ? `ChatGPT subscription · ${settings.subscriptionModel}`
       : settings?.provider === "claude"
         ? "Claude subscription · the model Claude is set to"
-        : `${providerFor(settings?.baseUrl ?? "")?.name ?? settings?.baseUrl ?? "the app endpoint"} · ${settings?.defaultModel ?? ""}`;
+        : settings?.provider === "claudeCode"
+          ? "Claude Code · the agent's own session"
+          : `${providerFor(settings?.baseUrl ?? "")?.name ?? settings?.baseUrl ?? "the app endpoint"} · ${settings?.defaultModel ?? ""}`;
 
   const onSubscription = provider === "chatgpt";
   const onClaude = provider === "claude";
+  const onClaudeCode = provider === "claudeCode";
   const onEndpoint = provider === "compatible";
 
   /**
@@ -346,9 +349,11 @@ export function GroupEditor({ group, onClose, onSection }: Props) {
     ? `ChatGPT subscription · ${subscriptionModel || settings?.subscriptionModel || ""}`
     : onClaude
       ? "Claude subscription · the model Claude is set to"
-      : onEndpoint
-        ? `${providerFor(baseUrl || (settings?.baseUrl ?? ""))?.name ?? baseUrl} · ${model || settings?.defaultModel || ""}`
-        : `The app settings · ${inherited}`;
+      : onClaudeCode
+        ? "Claude Code · the agent's own session"
+        : onEndpoint
+          ? `${providerFor(baseUrl || (settings?.baseUrl ?? ""))?.name ?? baseUrl} · ${model || settings?.defaultModel || ""}`
+          : `The app settings · ${inherited}`;
 
   const setLimitCount = LIMITS.filter((field) => (limits[field.key] ?? "").trim()).length;
 
@@ -557,6 +562,36 @@ export function GroupEditor({ group, onClose, onSection }: Props) {
                       aria-label="Use the Claude subscription"
                       disabled={busy}
                       onClick={() => setProvider("claude")}
+                    >
+                      Use it
+                    </button>
+                  )}
+                </div>
+
+                <div className="preset preset--plain" aria-current={onClaudeCode}>
+                  <span className="preset__text">
+                    <span className="preset__name">Claude Code</span>
+                    <span className="preset__url">
+                      {capabilities.claudeProvider
+                        ? "Runs full Claude Code sessions with their own tools and working directories. Each agent is one session."
+                        : "Runs the claude program where you signed in, which is your own machine, so a server cannot offer it"}
+                    </span>
+                  </span>
+                  {!capabilities.claudeProvider ? (
+                    <span className="preset__state" data-ready="false">
+                      Not on a server
+                    </span>
+                  ) : onClaudeCode ? (
+                    <span className="preset__state" data-ready="true">
+                      In use
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn--small"
+                      aria-label="Use Claude Code"
+                      disabled={busy}
+                      onClick={() => setProvider("claudeCode")}
                     >
                       Use it
                     </button>

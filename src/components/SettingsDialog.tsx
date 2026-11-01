@@ -835,6 +835,42 @@ export function SettingsDialog({ onClose, section: opening, onSection }: Props) 
                   )}
                 </div>
 
+                <div className="preset preset--plain" aria-current={provider === "claudeCode"}>
+                  <span className="preset__text">
+                    <span className="preset__name">Claude Code</span>
+                    <span className="preset__url">
+                      {!capabilities.claudeProvider
+                        ? "Runs the claude program where you signed in, which is your own machine, so a server cannot offer it"
+                        : claudeInstalled === false
+                          ? "Runs the claude program, which is not installed on this machine"
+                          : "Runs full Claude Code sessions with their own tools and working directories. Each agent is one session."}
+                    </span>
+                  </span>
+                  {!capabilities.claudeProvider ? (
+                    <span className="preset__state" data-ready="false">
+                      Not on a server
+                    </span>
+                  ) : claudeInstalled === false ? (
+                    <span className="preset__state" data-ready="false">
+                      Not installed
+                    </span>
+                  ) : provider === "claudeCode" ? (
+                    <span className="preset__state" data-ready="true">
+                      In use
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn--small"
+                      aria-label="Use Claude Code"
+                      disabled={busy || claudeInstalled === null}
+                      onClick={() => setProvider("claudeCode")}
+                    >
+                      Use it
+                    </button>
+                  )}
+                </div>
+
                 {provider === "claude" && (
                   <p className="hint">
                     Which model runs, and which account pays, are Claude's own settings. This app

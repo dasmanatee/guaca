@@ -47,6 +47,11 @@ pub enum Provider {
     /// whatever that program is signed in to, which is the operator's business
     /// and not this app's.
     Claude,
+    /// The `claude` program on this machine as a whole session per agent. Where
+    /// `Claude` above is a model behind Guaca's own tool loop, this one is the
+    /// agent: it brings its own tools and working directory, and Guaca only
+    /// carries messages in and out.
+    ClaudeCode,
 }
 
 impl Provider {
@@ -55,7 +60,8 @@ impl Provider {
     /// A fixed-length array rather than a loose list, so a variant added
     /// without being added here is a compile error rather than a case the
     /// round-trip suite below silently stops covering.
-    pub const ALL: [Provider; 3] = [Provider::Compatible, Provider::Chatgpt, Provider::Claude];
+    pub const ALL: [Provider; 4] =
+        [Provider::Compatible, Provider::Chatgpt, Provider::Claude, Provider::ClaudeCode];
 
     /// How a provider is spelled in SQLite, which is the same as on the wire.
     ///
@@ -67,6 +73,7 @@ impl Provider {
             Provider::Compatible => "compatible",
             Provider::Chatgpt => "chatgpt",
             Provider::Claude => "claude",
+            Provider::ClaudeCode => "claudeCode",
         }
     }
 
@@ -79,6 +86,7 @@ impl Provider {
             "compatible" => Some(Provider::Compatible),
             "chatgpt" => Some(Provider::Chatgpt),
             "claude" => Some(Provider::Claude),
+            "claudeCode" => Some(Provider::ClaudeCode),
             _ => None,
         }
     }
@@ -170,7 +178,7 @@ impl InferenceConfig {
     /// produces a refusal that names the actual problem.
     pub fn is_ready(&self) -> bool {
         match self.provider {
-            Provider::Chatgpt | Provider::Claude => true,
+            Provider::Chatgpt | Provider::Claude | Provider::ClaudeCode => true,
             Provider::Compatible => {
                 !self.api_key.trim().is_empty() && !self.base_url.trim().is_empty()
             }
@@ -182,6 +190,7 @@ impl InferenceConfig {
         match self.provider {
             Provider::Chatgpt => crate::llm::codex::DEFAULT_BASE_URL,
             Provider::Claude => crate::llm::claude::PROGRAM,
+            Provider::ClaudeCode => crate::llm::claude_code::PROGRAM,
             Provider::Compatible => &self.base_url,
         }
     }
@@ -201,6 +210,7 @@ impl InferenceConfig {
         match self.provider {
             Provider::Chatgpt => &self.subscription_model,
             Provider::Claude => crate::llm::claude::MODEL_LABEL,
+            Provider::ClaudeCode => crate::llm::claude_code::DEFAULT_MODEL,
             Provider::Compatible => &self.default_model,
         }
     }
@@ -867,6 +877,20 @@ mod tests {
             assert_eq!(Provider::parse(provider.as_str()), Some(provider));
         }
         assert_eq!(Provider::parse("anthropic-native"), None, "a future value is inherit");
+    }
+
+    #[test]
+    fn claude_code_is_spelled_the_same_in_sqlite_and_on_the_wire() {
+        assert_eq!(Provider::ClaudeCode.as_str(), "claudeCode");
+        assert_eq!(Provider::parse("claudeCode"), Some(Provider::ClaudeCode));
+        assert_eq!(
+            serde_json::to_value(Provider::ClaudeCode).unwrap(),
+            serde_json::json!("claudeCode")
+        );
+        let cfg = InferenceConfig { provider: Provider::ClaudeCode, ..InferenceConfig::default() };
+        assert!(cfg.is_ready());
+        assert_eq!(cfg.endpoint(), "claude");
+        assert_eq!(cfg.active_model(), "sonnet");
     }
 
     #[test]

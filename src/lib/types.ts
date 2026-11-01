@@ -825,7 +825,7 @@ export interface GuardLimits {
  * rather than one with a flag for the same reason the Rust side says so: almost
  * nothing about a call is the same between them.
  */
-export type Provider = "compatible" | "chatgpt" | "claude";
+export type Provider = "compatible" | "chatgpt" | "claude" | "claudeCode";
 
 /**
  * One model OpenRouter ranks for a kind of work, as a suggestion beside a model

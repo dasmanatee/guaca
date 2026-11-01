@@ -257,7 +257,7 @@ impl AgentCard {
         let named = match provider {
             Provider::Compatible => &self.model,
             Provider::Chatgpt => &self.subscription_model,
-            Provider::Claude => return None,
+            Provider::Claude | Provider::ClaudeCode => return None,
         };
         Some(named.trim()).filter(|model| !model.is_empty())
     }
@@ -296,7 +296,7 @@ pub fn split_legacy_model(model: &str, crew: Option<Provider>) -> (String, Strin
     match crew {
         Some(Provider::Compatible) => (model, String::new()),
         Some(Provider::Chatgpt) => (String::new(), model),
-        Some(Provider::Claude) | None => (model.clone(), model),
+        Some(Provider::Claude | Provider::ClaudeCode) | None => (model.clone(), model),
     }
 }
 

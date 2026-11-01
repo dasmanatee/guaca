@@ -1,5 +1,6 @@
 pub mod catalog;
 pub mod claude;
+pub mod claude_code;
 pub mod codex;
 pub mod modality;
 pub mod openrouter;

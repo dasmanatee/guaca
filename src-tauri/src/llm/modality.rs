@@ -161,7 +161,7 @@ impl Registry {
     /// this same fact written once in each of them.
     pub async fn of(&self, cfg: &InferenceConfig, model: &str) -> Modalities {
         match cfg.provider {
-            Provider::Chatgpt | Provider::Claude => Modalities::seeing(),
+            Provider::Chatgpt | Provider::Claude | Provider::ClaudeCode => Modalities::seeing(),
             Provider::Compatible => {
                 let answer =
                     self.published(cfg, model.trim()).await.unwrap_or_else(Modalities::seeing);

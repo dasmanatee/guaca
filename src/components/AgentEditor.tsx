@@ -79,7 +79,9 @@ export function AgentEditor({ agent, onClose }: Props) {
       ? "ChatGPT subscription"
       : provider === "claude"
         ? "Claude subscription"
-        : providerFor(endpoint)?.name || endpoint || "App endpoint";
+        : provider === "claudeCode"
+          ? "Claude Code"
+          : providerFor(endpoint)?.name || endpoint || "App endpoint";
   const inheritedModel =
     provider === "chatgpt"
       ? crew?.inference.subscriptionModel || settings?.subscriptionModel || ""
@@ -244,7 +246,7 @@ export function AgentEditor({ agent, onClose }: Props) {
             onChange={(subscriptionModel) => patch({ subscriptionModel })}
             hint="Choose a ChatGPT model for this agent, or use the group default. Choices come from your signed-in account."
           />
-        ) : provider === "claude" ? (
+        ) : provider === "claude" || provider === "claudeCode" ? (
           <div className="field">
             <span className="field__label">Model</span>
             <span className="field__hint">

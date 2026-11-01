@@ -845,8 +845,9 @@ describe("the provider presets", () => {
       // The ones a server can reach are untouched.
       expect((preset("OpenRouter") as HTMLButtonElement).disabled).toBe(false);
 
-      expect(screen.getByText("Not on a server")).toBeTruthy();
+      expect(screen.getAllByText("Not on a server")).toHaveLength(2);
       expect(screen.queryByRole("button", { name: "Use the Claude subscription" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Use Claude Code" })).toBeNull();
     } finally {
       useStore.setState({
         capabilities: {
@@ -942,13 +943,16 @@ describe("the Workspace pane", () => {
 });
 
 describe("provider-specific configuration", () => {
-  it.each(["chatgpt", "claude"] as const)(
+  it.each(["chatgpt", "claude", "claudeCode"] as const)(
     "hides API configuration while %s is selected and preserves edits across switches",
     async (provider) => {
       subscriptionStatus.mockResolvedValue(signedIn());
       open(stored({ provider }), DEFAULT_PREFS, "provider");
-      const subscriptionButton =
-        provider === "chatgpt" ? "Use the ChatGPT subscription" : "Use the Claude subscription";
+      const subscriptionButton = {
+        chatgpt: "Use the ChatGPT subscription",
+        claude: "Use the Claude subscription",
+        claudeCode: "Use Claude Code",
+      }[provider];
 
       expect(screen.queryByLabelText(/^Inference endpoint/)).toBeNull();
       expect(screen.queryByLabelText(/^API key/)).toBeNull();

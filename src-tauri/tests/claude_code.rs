@@ -144,6 +144,7 @@ async fn a_missing_session_is_the_programs_own_refusal() {
 
     assert!(matches!(err, LlmError::ProgramFailed { .. }), "{err}");
     assert!(err.to_string().contains("No conversation found"), "{err}");
+    assert!(err.to_string().contains("Type /clear in the channel"), "{err}");
     assert!(!err.is_transient(), "resending the batch cannot bring the session back");
 }
 

@@ -395,12 +395,19 @@ impl Store {
                 // silently relocate an agent on an unrelated edit. The same for
                 // the subscription model, which a client from before it sends
                 // no value for.
+                //
+                // A session goes with the directory it was started in: the
+                // program files sessions by directory, and one resumed from
+                // anywhere else is not found. Every column on the right reads
+                // the row as it was, so `cwd` here is the old one.
                 "UPDATE agents
                     SET name=?2, avatar=?3, color=?4, model=?5, system_prompt=?6, skills=?7,
                         version = version + 1, updated_at=?8,
                         group_id = coalesce(?9, group_id), reasoning_effort=?10,
                         subscription_model = coalesce(?11, subscription_model),
-                        cwd = coalesce(?12, cwd)
+                        cwd = coalesce(?12, cwd),
+                        claude_session = CASE WHEN ?12 IS NOT NULL AND ?12 IS NOT cwd
+                                              THEN NULL ELSE claude_session END
                   WHERE id=?1",
                 params![
                     id.to_string(),
@@ -4640,6 +4647,25 @@ mod tests {
 
         f.store.set_claude_session(agent.id, None).unwrap();
         assert_eq!(f.store.get_agent(agent.id).unwrap().unwrap().claude_session, None);
+    }
+
+    #[test]
+    fn a_moved_working_directory_forgets_the_session_filed_under_the_old_one() {
+        // The program files a session by the directory it ran in, so one
+        // resumed from somewhere else is not found and every turn fails.
+        let f = fixture();
+        let made = CleanDraft { cwd: Some("/tmp".into()), ..draft("Coder") };
+        let agent = f.store.create_agent(&made).unwrap();
+        f.store.set_claude_session(agent.id, Some("abc")).unwrap();
+
+        // Naming the same directory again is not a move.
+        let same = f.store.update_agent(agent.id, &made).unwrap();
+        assert_eq!(same.claude_session.as_deref(), Some("abc"));
+
+        let moved = CleanDraft { cwd: Some("/var/tmp".into()), ..draft("Coder") };
+        let edited = f.store.update_agent(agent.id, &moved).unwrap();
+        assert_eq!(edited.cwd, "/var/tmp");
+        assert_eq!(edited.claude_session, None);
     }
 
     #[test]

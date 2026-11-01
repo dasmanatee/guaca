@@ -573,6 +573,14 @@ pub async fn stream<F: FnMut(Token<'_>)>(
         message: "the program produced no output stream".to_string(),
     })?;
 
+    // A resumed turn that fails is most often a session the program no longer
+    // has, and resending will not bring it back. Starting over will.
+    let way_out = if session.resume.is_some() {
+        " Type /clear in the channel to start a fresh session."
+    } else {
+        ""
+    };
+
     let mut state = Fold::default();
     let mut reader = BufReader::new(stdout).lines();
     loop {
@@ -620,13 +628,18 @@ pub async fn stream<F: FnMut(Token<'_>)>(
         let detail = if said.is_empty() { code } else { format!("{code}: {said}") };
         return Err(LlmError::ProgramFailed {
             program: PROGRAM,
-            message: format!("{PROGRAM} ended without answering ({detail})"),
+            message: format!("{PROGRAM} ended without answering ({detail}).{way_out}"),
         });
     }
     drain.abort();
 
     if let Some(said) = state.failed {
-        return Err(LlmError::ProgramFailed { program: PROGRAM, message: said });
+        let message = if way_out.is_empty() {
+            said
+        } else {
+            format!("{}.{way_out}", said.trim_end_matches('.'))
+        };
+        return Err(LlmError::ProgramFailed { program: PROGRAM, message });
     }
 
     Ok(Completion {

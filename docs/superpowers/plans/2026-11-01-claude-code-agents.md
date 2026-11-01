@@ -20,7 +20,8 @@
 - A `/clear` batch spawns nothing and clears the stored session; any other `/command` is forwarded unchanged.
 - Native daemon: `GUACA_ROOT=~/.local/share/guaca-native`, `GUACA_BIND=127.0.0.1:8788`, `GUACA_WEB=dist`.
 - AGENTS.md conventions: failure-path tests first; every error says what happened and what to do; comments explain why; no dead code; American spelling. Commits carry **no** model co-author trailer and no "Generated with" footer. Commit as `git -c user.name=Joshua -c user.email=joshua@nennya.com commit ...`.
-- Verify Rust changes with both `cargo test --manifest-path src-tauri/Cargo.toml` and `cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --features server --all-targets -- -D warnings`. The server feature build has no `dist/`; run `pnpm build` once first (CI's `ensure_dist`).
+- Toolchain on this machine lives under the home directory: `export PATH="$HOME/.local/node/bin:$HOME/.cargo/bin:$PATH"` at the top of every shell (Rust 1.99, Node 22, pnpm 10.33). No sudo is available.
+- This machine lacks the WebKit development headers the desktop feature needs, so **every Rust command here uses the daemon build**: `cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features server` and `cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --features server --all-targets -- -D warnings`, plus `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`. Wherever a task below says `cargo test`, read it as that daemon form. `dist/` is already built; rebuild it with `pnpm build` after frontend changes. Frontend: `pnpm check && pnpm typecheck && pnpm test`.
 - Only touch the three existing providers where the compiler forces a new match arm.
 
 ## Review Focus

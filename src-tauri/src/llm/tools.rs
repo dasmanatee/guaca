@@ -274,6 +274,7 @@ pub fn catalog() -> Vec<ToolSummary> {
 /// One tool's spec by name, as an agent with no computer and no browser is
 /// offered it, for a surface that hands out a single tool rather than a turn's
 /// whole list.
+#[cfg(feature = "server")]
 pub(crate) fn spec(name: &str) -> Option<ToolSpec> {
     let surfaces = Surfaces { computer: false, browser: false, errands: false };
     all_specs(surfaces).into_iter().find(|spec| spec.name == name)

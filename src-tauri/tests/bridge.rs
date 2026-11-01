@@ -3,7 +3,7 @@
 //! A `claude` session keeps its own tools and is handed exactly one of
 //! Guaca's: `send_message`, over the MCP server this route speaks. What is
 //! tested here is that a client speaking MCP gets the answers it expects, that
-//! the route is behind the workspace's token like everything else, and that a
+//! the route is behind a token of its own that opens nothing else, and that a
 //! call names the turn it belongs to so a message lands in that turn's run.
 //!
 //! Entirely offline. Nothing spawns `claude` and no model is called: the
@@ -44,11 +44,21 @@ fn route(addr: SocketAddr, agent: AgentId, run: RunId) -> String {
     format!("http://{addr}/v1/claude-code/mcp/{agent}/{run}")
 }
 
+/// The token a session is handed for the bridge.
+fn bridge_token(runtime: &guac_lib::runtime::Runtime) -> String {
+    runtime.mcp_bridge_for_tests().expect("a served workspace has a bridge").token
+}
+
 /// One JSON-RPC request, as Claude Code sends it.
-async fn rpc(url: &str, method: &str, params: Value) -> Value {
+async fn rpc(
+    runtime: &guac_lib::runtime::Runtime,
+    url: &str,
+    method: &str,
+    params: Value,
+) -> Value {
     let response = reqwest::Client::new()
         .post(url)
-        .bearer_auth(TOKEN)
+        .bearer_auth(bridge_token(runtime))
         .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }))
         .send()
         .await
@@ -89,12 +99,14 @@ fn sent_by(runtime: &guac_lib::runtime::Runtime, from: AgentId, to: AgentId, run
 }
 
 #[tokio::test]
-async fn a_call_without_the_token_is_401() {
+async fn a_call_without_the_bridge_token_is_401() {
     let (addr, _runtime, _dir) = workspace().await;
     let url = route(addr, AgentId::new(), RunId::new());
     let client = reqwest::Client::new();
 
-    for token in [None, Some("not-the-token")] {
+    // The workspace's token included: it opens everything else, and nothing a
+    // session needs is behind it.
+    for token in [None, Some("not-the-token"), Some(TOKEN)] {
         let mut request =
             client.post(&url).json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }));
         if let Some(token) = token {
@@ -106,12 +118,27 @@ async fn a_call_without_the_token_is_401() {
 }
 
 #[tokio::test]
+async fn the_bridge_token_opens_nothing_but_the_bridge() {
+    // Every session is handed it, so it must not be a way into the rest.
+    let (addr, runtime, _dir) = workspace().await;
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/call"))
+        .bearer_auth(bridge_token(&runtime))
+        .json(&json!({ "name": "list_agents", "args": {} }))
+        .send()
+        .await
+        .expect("the daemon answers");
+    assert_eq!(response.status(), 401);
+    assert_ne!(bridge_token(&runtime), TOKEN);
+}
+
+#[tokio::test]
 async fn a_call_for_a_run_that_is_not_live_is_refused_in_the_result() {
-    let (addr, _runtime, _dir) = workspace().await;
+    let (addr, runtime, _dir) = workspace().await;
     let url = route(addr, AgentId::new(), RunId::new());
 
     let body = rpc(
-        &url,
+&runtime, &url,
         "tools/call",
         json!({ "name": "send_message", "arguments": { "to": ["Pat"], "text": "hi", "intent": "work" } }),
     )
@@ -126,8 +153,9 @@ async fn a_call_for_a_run_that_is_not_live_is_refused_in_the_result() {
 
 #[tokio::test]
 async fn tools_list_offers_exactly_send_message() {
-    let (addr, _runtime, _dir) = workspace().await;
-    let body = rpc(&route(addr, AgentId::new(), RunId::new()), "tools/list", json!({})).await;
+    let (addr, runtime, _dir) = workspace().await;
+    let body =
+        rpc(&runtime, &route(addr, AgentId::new(), RunId::new()), "tools/list", json!({})).await;
 
     let tools = body["result"]["tools"].as_array().expect("a list of tools");
     assert_eq!(tools.len(), 1, "{body}");
@@ -140,38 +168,38 @@ async fn tools_list_offers_exactly_send_message() {
 
 #[tokio::test]
 async fn initialize_names_the_server() {
-    let (addr, _runtime, _dir) = workspace().await;
+    let (addr, runtime, _dir) = workspace().await;
     let url = route(addr, AgentId::new(), RunId::new());
 
-    let body = rpc(&url, "initialize", json!({ "protocolVersion": "2025-06-18" })).await;
+    let body = rpc(&runtime, &url, "initialize", json!({ "protocolVersion": "2025-06-18" })).await;
     assert_eq!(body["result"]["serverInfo"]["name"], "guaca");
     assert_eq!(body["result"]["serverInfo"]["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(body["result"]["protocolVersion"], "2025-06-18", "the client's version is echoed");
     assert!(body["result"]["capabilities"]["tools"].is_object());
 
-    let body = rpc(&url, "initialize", json!({})).await;
+    let body = rpc(&runtime, &url, "initialize", json!({})).await;
     assert_eq!(body["result"]["protocolVersion"], "2025-03-26");
 }
 
 #[tokio::test]
 async fn the_rest_of_the_protocol_is_answered_as_a_client_expects() {
-    let (addr, _runtime, _dir) = workspace().await;
+    let (addr, runtime, _dir) = workspace().await;
     let url = route(addr, AgentId::new(), RunId::new());
     let client = reqwest::Client::new();
 
-    let body = rpc(&url, "ping", json!({})).await;
+    let body = rpc(&runtime, &url, "ping", json!({})).await;
     assert_eq!(body["result"], json!({}));
 
-    let body = rpc(&url, "resources/list", json!({})).await;
+    let body = rpc(&runtime, &url, "resources/list", json!({})).await;
     assert_eq!(body["error"]["code"], -32601, "{body}");
 
-    let body = rpc(&url, "tools/call", json!({ "name": "Bash", "arguments": {} })).await;
+    let body = rpc(&runtime, &url, "tools/call", json!({ "name": "Bash", "arguments": {} })).await;
     assert_eq!(body["error"]["code"], -32602, "{body}");
     assert!(body["error"]["message"].as_str().unwrap().contains("send_message"), "{body}");
 
     let notified = client
         .post(&url)
-        .bearer_auth(TOKEN)
+        .bearer_auth(bridge_token(&runtime))
         .json(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
         .send()
         .await
@@ -179,13 +207,19 @@ async fn the_rest_of_the_protocol_is_answered_as_a_client_expects() {
     assert_eq!(notified.status(), 202);
     assert!(notified.bytes().await.unwrap().is_empty());
 
-    let garbled = client.post(&url).bearer_auth(TOKEN).body("{not json").send().await.unwrap();
+    let garbled = client
+        .post(&url)
+        .bearer_auth(bridge_token(&runtime))
+        .body("{not json")
+        .send()
+        .await
+        .unwrap();
     assert_eq!(garbled.status(), 200);
     let body: Value = garbled.json().await.unwrap();
     assert_eq!(body["error"]["code"], -32700, "{body}");
 
     // A client that wants a stream of server messages is told there is none.
-    let listened = client.get(&url).bearer_auth(TOKEN).send().await.unwrap();
+    let listened = client.get(&url).bearer_auth(bridge_token(&runtime)).send().await.unwrap();
     assert_eq!(listened.status(), 405);
 }
 
@@ -198,7 +232,7 @@ async fn a_live_relay_queues_a_message_for_the_peer() {
     runtime.open_relay_for_tests(dana, run);
 
     let body = rpc(
-        &route(addr, dana, run),
+&runtime, &route(addr, dana, run),
         "tools/call",
         json!({ "name": "send_message", "arguments": { "to": ["Pat"], "text": "hi", "intent": "work" } }),
     )
@@ -213,7 +247,7 @@ async fn a_live_relay_queues_a_message_for_the_peer() {
     // An agent with no turn of its own in the run cannot speak through Dana's.
     let lee = agent(addr, "Lee").await;
     let body = rpc(
-        &route(addr, lee, run),
+&runtime, &route(addr, lee, run),
         "tools/call",
         json!({ "name": "send_message", "arguments": { "to": ["Pat"], "text": "hi", "intent": "work" } }),
     )
@@ -224,6 +258,7 @@ async fn a_live_relay_queues_a_message_for_the_peer() {
 
     // Arguments the parser refuses come back as a refusal the model can read.
     let body = rpc(
+        &runtime,
         &route(addr, dana, run),
         "tools/call",
         json!({ "name": "send_message", "arguments": { "to": ["Pat"] } }),
@@ -247,7 +282,7 @@ async fn two_turns_in_one_run_each_send_as_themselves() {
 
     for (from, to) in [(dana, "Pat"), (pat, "Dana")] {
         let body = rpc(
-            &route(addr, from, run),
+&runtime, &route(addr, from, run),
             "tools/call",
             json!({ "name": "send_message", "arguments": { "to": [to], "text": "hi", "intent": "work" } }),
         )

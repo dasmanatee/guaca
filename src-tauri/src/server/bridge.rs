@@ -6,8 +6,11 @@
 //! never a stream, and exactly one tool, `send_message`, sent as the turn that
 //! started the session would have sent it.
 //!
-//! The URL names the agent and the run, and the token is the workspace's own.
-//! A session is told nothing it could use to speak as anybody else: the run is
+//! The URL names the agent and the run, and the token is the bridge's own,
+//! minted when the server starts and refused everywhere else. The workspace's
+//! token is refused here in turn, so nothing a session holds opens the rest of
+//! the server and nothing that opens the rest of the server is needed here. A
+//! session is told nothing it could use to speak as anybody else: the run is
 //! checked against the agent it belongs to, and a run that has ended has no
 //! relay left to send through.
 
@@ -18,7 +21,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Value};
 
-use super::{authorized, Serving};
+use super::{bearer, same, Serving};
 use crate::domain::ids::{AgentId, RunId};
 use crate::llm::tools;
 
@@ -33,8 +36,16 @@ pub(super) async fn call(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Err(response) = authorized(&serving, &headers, None) {
-        return *response;
+    if !bearer(&headers).is_some_and(|token| same(token, &serving.bridge_token)) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "err": {
+                "kind": "unauthorized",
+                "message": "this route takes the token Guaca gives a Claude Code session for its \
+                            turn, not the workspace's. Only a session Guaca started can call it",
+            }})),
+        )
+            .into_response();
     }
 
     let Ok(request) = serde_json::from_slice::<Value>(&body) else {

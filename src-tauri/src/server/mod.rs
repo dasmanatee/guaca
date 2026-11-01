@@ -119,6 +119,9 @@ impl EventSink for SocketSink {
 struct Serving {
     state: Arc<AppState>,
     token: Arc<str>,
+    /// What a Claude Code session presents to the bridge, and nothing else
+    /// accepts. See [`bind`] for why it is not `token`.
+    bridge_token: Arc<str>,
     sink: Arc<SocketSink>,
     updates: Arc<crate::updates::Checker>,
     updater: Option<Arc<std::path::Path>>,
@@ -207,9 +210,16 @@ pub async fn bind(settings: Settings) -> Result<Bound, String> {
     });
 
     let token: Arc<str> = settings.token.into();
+    // Minted per boot and good for one route. It is handed to every Claude
+    // Code session, whose processes the operator's other tools can look at,
+    // and the workspace token would open everything this server does. Two v4
+    // UUIDs, as `guacad` makes the workspace token.
+    let bridge_token: Arc<str> =
+        format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple()).into();
     let serving = Serving {
         state,
         token: token.clone(),
+        bridge_token: bridge_token.clone(),
         sink,
         updates: Arc::new(crate::updates::Checker::default()),
         updater: settings.updater.map(Arc::from),
@@ -304,7 +314,7 @@ pub async fn bind(settings: Settings) -> Result<Bound, String> {
     };
     runtime.set_mcp_bridge(crate::llm::claude_code::Bridge {
         url: format!("http://{reach}"),
-        token: token.to_string(),
+        token: bridge_token.to_string(),
     });
     tracing::info!(%addr, agents = booted.started, "guacad ready");
     if settings.web.is_some() {
@@ -1056,14 +1066,7 @@ fn authorized(
     headers: &HeaderMap,
     ticket: Option<&str>,
 ) -> Result<(), Box<Response>> {
-    let presented = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .map(str::trim)
-        .or(ticket);
-
-    match presented {
+    match bearer(headers).or(ticket) {
         Some(token) if same(token, &serving.token) => Ok(()),
         _ => Err(Box::new(
             (
@@ -1077,6 +1080,15 @@ fn authorized(
                 .into_response(),
         )),
     }
+}
+
+/// The token an `Authorization: Bearer` header carries.
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
 }
 
 /// Byte equality that does not return early.

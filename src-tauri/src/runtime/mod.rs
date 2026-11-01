@@ -1095,7 +1095,8 @@ impl Runtime {
         self.inner.webhook_port.load(Ordering::SeqCst)
     }
 
-    /// Where Claude Code sessions reach the bridge, and the token it checks.
+    /// Where Claude Code sessions reach the bridge, and the token it checks,
+    /// which is the bridge's own and not the workspace's.
     ///
     /// The base only: each turn's URL names its agent and run, so the bridge
     /// can tell who is sending without trusting what the session says.
@@ -1105,6 +1106,13 @@ impl Runtime {
 
     fn mcp_bridge(&self) -> Option<claude_code::Bridge> {
         self.inner.mcp_bridge.lock().clone()
+    }
+
+    /// The bridge a session would be handed, for a test that has to present
+    /// its token.
+    #[doc(hidden)]
+    pub fn mcp_bridge_for_tests(&self) -> Option<claude_code::Bridge> {
+        self.mcp_bridge()
     }
 
     fn open_relay(&self, run_id: RunId, relay: Relay) -> Relayed<'_> {

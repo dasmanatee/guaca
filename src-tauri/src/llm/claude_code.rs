@@ -8,7 +8,7 @@
 //! out and no longer decides what the agent may do.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -117,12 +117,13 @@ const OPERATOR: &str = "[OPERATOR]";
 ///   already has it, and appending it again would stack a copy per turn.
 /// - **`--mcp-config`** when the bridge is up, so the session can reach its
 ///   crewmates. Merged with the operator's own servers rather than replacing
-///   them, because those are part of what the operator chose this for.
+///   them, because those are part of what the operator chose this for. The
+///   path to an [`McpConfig`] and never the JSON itself, which carries a token.
 ///
 /// No `--model`. The session picks its model exactly as it does in a terminal,
 /// from the operator's settings or a `/model` sent in the channel, and a flag
 /// here would override both on every turn.
-pub fn argv(session: &Session) -> Vec<String> {
+pub fn argv(session: &Session, mcp_config: Option<&Path>) -> Vec<String> {
     let mut args: Vec<String> = [
         "-p",
         "--input-format",
@@ -145,7 +146,38 @@ pub fn argv(session: &Session) -> Vec<String> {
         args.extend(["--append-system-prompt".to_string(), prompt.clone()]);
     }
 
-    if let Some(bridge) = &session.bridge {
+    if let Some(config) = mcp_config {
+        args.extend(["--mcp-config".to_string(), config.display().to_string()]);
+    }
+
+    args
+}
+
+/// The session's MCP config, on disk for exactly one turn.
+///
+/// A file because a command line is not private: any process of this user can
+/// read it under `/proc` for as long as the turn runs, and the config carries
+/// the bridge's token. Only this user can read the file, and it is removed when
+/// the guard is dropped, which is when the turn ends however it ends, a stop
+/// included.
+pub struct McpConfig {
+    path: PathBuf,
+}
+
+impl McpConfig {
+    pub fn write(bridge: &Bridge) -> std::io::Result<Self> {
+        use std::io::Write;
+
+        let dir = std::env::temp_dir().join("guaca-claude-code");
+        let mut folder = std::fs::DirBuilder::new();
+        folder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            folder.mode(0o700);
+        }
+        folder.create(&dir)?;
+
         let config = serde_json::json!({
             "mcpServers": {
                 MCP_SERVER: {
@@ -155,10 +187,30 @@ pub fn argv(session: &Session) -> Vec<String> {
                 },
             },
         });
-        args.extend(["--mcp-config".to_string(), config.to_string()]);
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let path = dir.join(format!("{}.json", uuid::Uuid::new_v4()));
+        let mut file = options.open(&path)?;
+        // Held before the write, so a write that fails still removes the file.
+        let guard = Self { path };
+        file.write_all(config.to_string().as_bytes())?;
+        Ok(guard)
     }
 
-    args
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for McpConfig {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// The slash command an operator line carries, without the label the runtime
@@ -509,7 +561,18 @@ pub async fn stream<F: FnMut(Token<'_>)>(
         });
     }
 
-    let args = argv(session);
+    let mcp_config = match &session.bridge {
+        Some(bridge) => Some(McpConfig::write(bridge).map_err(|err| LlmError::ProgramFailed {
+            program: PROGRAM,
+            message: format!(
+                "could not write the session's MCP config under {}: {err}. Check that the \
+                 temporary folder is writable and has space.",
+                std::env::temp_dir().display()
+            ),
+        })?),
+        None => None,
+    };
+    let args = argv(session, mcp_config.as_ref().map(McpConfig::path));
     // The id a first turn named, which is the session to keep if the result
     // frame never says otherwise.
     let named =
@@ -724,7 +787,7 @@ mod tests {
 
     #[test]
     fn argv_resumes_a_stored_session_and_never_isolates() {
-        let args = argv(&Session { resume: Some("abc".into()), ..session() });
+        let args = argv(&Session { resume: Some("abc".into()), ..session() }, None);
 
         assert_eq!(value_after(&args, "--resume"), Some("abc"));
         assert!(args.iter().any(|a| a == "--dangerously-skip-permissions"), "{args:?}");
@@ -745,7 +808,7 @@ mod tests {
 
     #[test]
     fn argv_starts_a_new_session_with_the_system_prompt_once() {
-        let args = argv(&Session { system_prompt: Some("you are Dana".into()), ..session() });
+        let args = argv(&Session { system_prompt: Some("you are Dana".into()), ..session() }, None);
 
         let id = value_after(&args, "--session-id").expect("a new session is named up front");
         assert!(uuid::Uuid::parse_str(id).is_ok(), "{id}");
@@ -755,16 +818,28 @@ mod tests {
     }
 
     #[test]
-    fn argv_carries_the_bridge_when_given_one() {
+    fn argv_names_the_bridge_by_a_private_file_that_goes_with_the_turn() {
         let bridge = Bridge { url: "http://127.0.0.1:8788/v1/x".into(), token: "t0k".into() };
-        let args = argv(&Session { bridge: Some(bridge), ..session() });
+        let file = McpConfig::write(&bridge).unwrap();
+        let args = argv(&Session { bridge: Some(bridge), ..session() }, Some(file.path()));
 
+        assert!(!args.iter().any(|a| a.contains("t0k")), "the token is on the command line");
+        let at = PathBuf::from(value_after(&args, "--mcp-config").unwrap());
         let config: serde_json::Value =
-            serde_json::from_str(value_after(&args, "--mcp-config").unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(&at).unwrap()).unwrap();
         let server = &config["mcpServers"][MCP_SERVER];
         assert_eq!(server["url"], "http://127.0.0.1:8788/v1/x");
         assert_eq!(server["type"], "http");
         assert_eq!(server["headers"]["Authorization"], "Bearer t0k");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&at).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+        }
+
+        drop(file);
+        assert!(!at.exists(), "the file outlived the turn");
     }
 
     #[test]

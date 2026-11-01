@@ -630,7 +630,13 @@ does.** The daemon serves one tool at `/v1/claude-code/mcp/{agent}/{run}`, and
 the session is told about it per turn. The path carries the agent and the run
 so a message is stamped as that agent's, in that turn, without trusting the
 session to say who it is. No other Guaca tool is offered, because each of them
-assumes a loop Guaca runs.
+assumes a loop Guaca runs. The bridge has a token of its own, minted when the
+daemon starts and refused everywhere else, and the workspace token is refused on
+the bridge; it reaches the session in a private file named on the command line,
+never on the command line itself, and the file is removed when the turn ends. On
+the same machine, a process that can read `/proc` can learn a peer's run id while
+that peer's turn runs and speak through its relay; that is inside the spec's
+no-sandbox non-goal.
 
 **`/clear` is the only command Guaca interprets.** A turn whose whole batch is
 the operator's `/clear` forgets the stored session id and starts the next

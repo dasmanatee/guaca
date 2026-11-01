@@ -524,3 +524,37 @@ async fn a_session_a_turn_is_still_writing_is_not_opened_in_a_terminal() {
     assert_eq!(crew.runtime.enter_terminal(crew.agent), Ok(()), "free once the turn is over");
     crew.runtime.leave_terminal(crew.agent);
 }
+
+/// The live half of `/compact`: the program answers a compaction in frames no
+/// model turn writes, and the operator must still see a reply in the channel.
+#[tokio::test]
+#[ignore = "live: spends the operator's own Claude plan"]
+async fn a_live_compaction_answers_in_the_channel() {
+    let cwd = tempfile::tempdir().unwrap();
+    let client = LlmClient::new().unwrap();
+    let turn = |resume: Option<String>, said: &str| {
+        asking(
+            cwd.path(),
+            resume.as_deref(),
+            resume.is_none().then_some("You are a test agent. Answer in one short sentence."),
+            said,
+        )
+    };
+
+    let first = client
+        .stream_chat(&on_claude_code(), &turn(None, "Name a color."), |_| {})
+        .await
+        .expect("the first turn should answer");
+    let session = first.session.expect("a first turn names its session");
+    client
+        .stream_chat(&on_claude_code(), &turn(Some(session.clone()), "Name a fruit."), |_| {})
+        .await
+        .expect("the second turn should answer");
+
+    let compacted = client
+        .stream_chat(&on_claude_code(), &turn(Some(session), "/compact"), |_| {})
+        .await
+        .expect("the compaction should answer");
+
+    assert!(!compacted.content.trim().is_empty(), "{compacted:?}");
+}

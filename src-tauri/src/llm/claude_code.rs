@@ -226,7 +226,43 @@ pub struct Fold {
     /// and not the tool, so the name and input are carried until it arrives.
     open: BTreeMap<String, (String, serde_json::Value)>,
     answered: bool,
+    /// Whether a local command answered in its own words. `/compact` usually
+    /// does, and when it does the program's line is the reply and nothing is
+    /// added to it.
+    said_locally: bool,
+    /// How a compaction ended, from its status frame, and the token counts its
+    /// boundary frame reported. The reply when the program's own line never
+    /// came, so a compaction is never answered with silence.
+    compacted: Option<String>,
+    compacted_tokens: Option<(u64, u64)>,
 }
+
+impl Fold {
+    /// Adds a piece of the reply, kept apart from what came before it.
+    fn say<F: FnMut(Token<'_>)>(&mut self, text: &str, on_token: &mut F) {
+        if !self.content.is_empty() {
+            self.content.push_str(THOUGHT_BREAK);
+            on_token(Token::Text(THOUGHT_BREAK));
+        }
+        self.content.push_str(text);
+        on_token(Token::Text(text));
+    }
+
+    /// The sentence a compaction is answered with when the program wrote none.
+    fn compaction(&self) -> Option<String> {
+        Some(match (self.compacted.as_deref()?, self.compacted_tokens) {
+            ("success", Some((before, after))) => {
+                format!("Compacted the session: {before} → {after} tokens.")
+            }
+            ("success", None) => "Compacted the session.".to_string(),
+            (other, _) => format!("Compaction failed: {other}."),
+        })
+    }
+}
+
+/// What the program wraps a local command's output in when it replays it as a
+/// user message.
+const LOCAL_STDOUT: (&str, &str) = ("<local-command-stdout>", "</local-command-stdout>");
 
 /// The result frame, as far as this app reads it.
 #[derive(Debug, Default, Deserialize)]
@@ -308,12 +344,7 @@ pub fn fold<F: FnMut(Token<'_>)>(
                         let Some(text) = str_at(block, "text").filter(|t| !t.is_empty()) else {
                             continue;
                         };
-                        if !state.content.is_empty() {
-                            state.content.push_str(THOUGHT_BREAK);
-                            on_token(Token::Text(THOUGHT_BREAK));
-                        }
-                        state.content.push_str(&text);
-                        on_token(Token::Text(&text));
+                        state.say(&text, on_token);
                     }
                     Some("thinking") => {
                         if let Some(text) = str_at(block, "thinking").filter(|t| !t.is_empty()) {
@@ -335,6 +366,23 @@ pub fn fold<F: FnMut(Token<'_>)>(
             Ok(false)
         }
         Some("user") => {
+            // A string rather than blocks is the program replaying something
+            // as the user: a local command's output, which is its answer, or a
+            // compaction's summary, which is the session's memory and not a
+            // reply to anyone.
+            if let Some(text) = event.pointer("/message/content").and_then(|c| c.as_str()) {
+                let output = text
+                    .trim()
+                    .strip_prefix(LOCAL_STDOUT.0)
+                    .and_then(|rest| rest.strip_suffix(LOCAL_STDOUT.1))
+                    .map(str::trim)
+                    .filter(|output| !output.is_empty());
+                if let Some(output) = output {
+                    state.say(output, on_token);
+                    state.said_locally = true;
+                }
+                return Ok(false);
+            }
             for block in blocks() {
                 if block.get("type").and_then(serde_json::Value::as_str) != Some("tool_result") {
                     continue;
@@ -378,12 +426,27 @@ pub fn fold<F: FnMut(Token<'_>)>(
                 let said = said.trim();
                 state.failed =
                     Some(if said.is_empty() { "it reported no reason" } else { said }.to_string());
-            } else if frame.local_command.is_some() && !said.is_empty() {
-                state.content = said;
-                on_token(Token::Text(&state.content));
+            } else if !state.said_locally {
+                // In order of whose words they are: the program's result, then
+                // this app's account of a compaction it saw happen.
+                if frame.local_command.is_some() && !said.is_empty() {
+                    state.say(&said, on_token);
+                } else if let Some(sentence) = state.compaction() {
+                    state.say(&sentence, on_token);
+                }
             }
             state.answered = true;
             Ok(true)
+        }
+        Some("system") => {
+            if let Some(ended) = event.get("compact_result") {
+                state.compacted = Some(ended.as_str().unwrap_or("no reason given").to_string());
+            }
+            if let Some(meta) = event.get("compact_metadata") {
+                let count = |key: &str| meta.get(key).and_then(serde_json::Value::as_u64);
+                state.compacted_tokens = count("pre_tokens").zip(count("post_tokens"));
+            }
+            Ok(false)
         }
         _ => Ok(false),
     }
@@ -788,6 +851,48 @@ mod tests {
         ]);
         assert_eq!(state.content, "Compacted.");
         assert_eq!(seen, ["text:Compacted."]);
+    }
+
+    const COMPACTING: &str =
+        r#"{"type":"system","subtype":"status","status":"compacting","session_id":"s-1"}"#;
+    const COMPACTED: &str = r#"{"type":"system","subtype":"status","status":null,"compact_result":"success","session_id":"s-1"}"#;
+    const REINIT: &str = r#"{"type":"system","subtype":"init","session_id":"s-1"}"#;
+    const BOUNDARY: &str = r#"{"type":"system","subtype":"compact_boundary","session_id":"s-1","compact_metadata":{"trigger":"manual","pre_tokens":35644,"post_tokens":9819}}"#;
+    const SUMMARY: &str = r#"{"type":"user","message":{"role":"user","content":"This session is being continued from a previous conversation. Summary: ..."},"isCompactSummary":true}"#;
+    const STDOUT: &str = r#"{"type":"user","message":{"role":"user","content":"<local-command-stdout>Compacted </local-command-stdout>"},"isReplay":true}"#;
+    const COMMAND_DONE: &str = r#"{"type":"result","subtype":"success","is_error":false,"session_id":"s-1","result":"","local_command":"compact"}"#;
+
+    #[test]
+    fn a_failed_compaction_says_so() {
+        let failed = COMPACTED.replace(r#""success""#, r#""failed""#);
+        let (state, seen) = fold_all(&[COMPACTING, &failed, COMMAND_DONE]);
+        assert_eq!(state.content, "Compaction failed: failed.");
+        assert_eq!(seen, ["text:Compaction failed: failed."]);
+    }
+
+    #[test]
+    fn a_compaction_answers_in_the_programs_own_words() {
+        let (state, seen) =
+            fold_all(&[COMPACTING, COMPACTED, REINIT, BOUNDARY, SUMMARY, STDOUT, COMMAND_DONE]);
+        assert_eq!(state.content, "Compacted");
+        assert_eq!(seen, ["text:Compacted"]);
+    }
+
+    #[test]
+    fn a_compaction_with_no_stdout_line_is_still_answered() {
+        let (state, _) = fold_all(&[COMPACTING, COMPACTED, REINIT, BOUNDARY, COMMAND_DONE]);
+        assert_eq!(state.content, "Compacted the session: 35644 → 9819 tokens.");
+
+        // Without the boundary there are no counts to quote.
+        let (state, _) = fold_all(&[COMPACTING, COMPACTED, COMMAND_DONE]);
+        assert_eq!(state.content, "Compacted the session.");
+    }
+
+    #[test]
+    fn the_replayed_summary_is_not_a_reply() {
+        let (state, seen) = fold_all(&[SUMMARY]);
+        assert_eq!(state.content, "");
+        assert!(seen.is_empty(), "{seen:?}");
     }
 
     #[test]

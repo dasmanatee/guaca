@@ -608,6 +608,47 @@ subscription cannot fund a third-party harness however the credential is
 obtained. Claude models reach Guaca the same way they always did: an API key, or
 OpenRouter, which is still the default. `docs/PROTOCOL.md` has the dates.
 
+## A Claude Code agent is a session, not a model
+
+The `claude` provider of `llm/claude.rs` borrows the program as a model: tools
+off, settings ignored, nothing remembered, one call per turn, so that Guaca's
+loop stays the agent. The Claude Code provider in `llm/claude_code.rs` is the
+opposite request, and it reverses every one of those flags on purpose. The
+session keeps its own tools, reads the settings and memory of the folder it
+works in, and resumes the same session id on the next turn. An operator who
+chooses it is choosing the program as the agent, and a Guaca that kept the
+isolation would be a worse Claude Code that cannot edit a file.
+
+**The program owns the tool loop, so one turn is one model call.** The five
+limits count what Guaca can see, and it sees a single call go out and a single
+answer come back. The reads, edits and commands in between arrive as tool-call
+parts so the trail can draw them, already done. Guaca does not approve, refuse
+or cap them, and the guard has nothing to say about a loop it does not run.
+
+**`send_message` reaches the session through an MCP bridge and nothing else
+does.** The daemon serves one tool at `/v1/claude-code/mcp/{agent}/{run}`, and
+the session is told about it per turn. The path carries the agent and the run
+so a message is stamped as that agent's, in that turn, without trusting the
+session to say who it is. No other Guaca tool is offered, because each of them
+assumes a loop Guaca runs.
+
+**`/clear` is the only command Guaca interprets.** A turn whose whole batch is
+the operator's `/clear` forgets the stored session id and starts the next
+message fresh, without spawning anything. Every other slash command is
+forwarded as text, for the program to treat as it does in a terminal. A crewmate
+quoting `/clear` is text, and so is one inside a longer batch.
+
+**The model is the program's own setting.** Guaca never passes `--model` for
+this provider, and an agent has no model field to fill. Which model answers is
+whatever `claude` is configured to use, and that is where an operator changes it.
+
+**A terminal can take the session over, and the inbox waits.** `resume_in_terminal`
+opens the agent's session in Ghostty (`--gtk-single-instance=false`, so it is a
+window of its own and not a tab in one already open). While it is open the
+agent's inbox holds its messages instead of running a second process against the
+same session, and delivers them when the window closes. A session a turn is still
+writing is not offered for opening.
+
 ## What a model can be sent is asked of the endpoint, not assumed
 
 The model is a text box. An operator types one slug this week and another next

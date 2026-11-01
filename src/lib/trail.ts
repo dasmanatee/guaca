@@ -145,6 +145,16 @@ function text(args: Args, key: string): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function clipped(args: Args, key: string): string | null {
+  const value = text(args, key);
+  return value === null ? null : clip(value);
+}
+
+/** The last segment of a path, which is the part a chip has room for. */
+function basename(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
 /**
  * The briefs an errand call carried, as the model sent them.
  *
@@ -396,6 +406,32 @@ function describe(tool: string, args: Args): Described {
           return { title: "Used its screen", target: null };
       }
     }
+
+    // The tools of a Claude Code agent, spelled as the program spells them.
+    // Its session runs them itself, so they arrive in the trail already done;
+    // `send_message` comes through the bridge under its own name and is read
+    // above.
+    case "Bash":
+      return { title: "Ran a command", target: clipped(args, "command") };
+    case "Edit":
+    case "Write":
+    case "MultiEdit": {
+      const file = text(args, "file_path");
+      return { title: file ? `Edited ${basename(file)}` : "Edited a file", target: file };
+    }
+    case "Read": {
+      const file = text(args, "file_path");
+      return { title: file ? `Read ${basename(file)}` : "Read a file", target: file };
+    }
+    case "Glob":
+    case "Grep":
+      return { title: "Searched files", target: text(args, "pattern") };
+    case "WebFetch":
+      return { title: "Read the web", target: text(args, "url") };
+    case "WebSearch":
+      return { title: "Read the web", target: text(args, "query") };
+    case "Task":
+      return { title: "Sent a subagent", target: text(args, "description") };
 
     // A tool this build does not know about reads as a tool nobody has
     // explained yet. Guessing at it is how `update_memory` once drew as a

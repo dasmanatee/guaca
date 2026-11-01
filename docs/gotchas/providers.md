@@ -5,6 +5,14 @@ the `claude` program. *A subscription is a second provider* in `AGENTS.md` is
 the rule these sit under, `docs/PROTOCOL.md` has the dates and the sources, and
 the code is `llm/codex.rs`, `llm/claude.rs` and `subscription.rs`.
 
+- **The two `claude` providers are not one provider with a switch.** Everything
+  that is load-bearing for the Claude provider is forbidden for Claude Code:
+  tools off, settings ignored, no session kept, and the structured answer it is
+  held to. Copying a flag from `llm/claude.rs` into `llm/claude_code.rs` quietly
+  strips an agent of its tools, and copying the other way lets a session's own
+  tools and settings into a turn that is meant to be one model call. Each file's
+  head says which request it is making; read it before moving a line between
+  them.
 - **A ChatGPT access token's `exp` is not when it stops working.** OpenAI mints
   one ten days out and the backend refuses it after about three, with
   `token_expired`. The local claim is the only signal on the machine and it is

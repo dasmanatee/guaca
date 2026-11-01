@@ -156,6 +156,55 @@ describe("what one call was", () => {
   });
 });
 
+describe("a Claude Code agent's own tools", () => {
+  it("reads a command, and clips a long one", () => {
+    const long = "x".repeat(100);
+    const [short, cut] = steps(call("Bash", { command: "ls" }), call("Bash", { command: long }));
+    expect(short?.title).toBe("Ran a command");
+    expect(short?.target).toBe("ls");
+    expect(cut?.target?.length).toBeLessThanOrEqual(60);
+  });
+
+  it("names the file, not the path, for the tools that change or read one", () => {
+    const [edit, write, multi, read] = steps(
+      call("Edit", { file_path: "/a/b/c.rs" }),
+      call("Write", { file_path: "/a/b/c.rs" }),
+      call("MultiEdit", { file_path: "/a/b/c.rs" }),
+      call("Read", { file_path: "/a/b/c.rs" }),
+    );
+    expect([edit?.title, write?.title, multi?.title]).toEqual([
+      "Edited c.rs",
+      "Edited c.rs",
+      "Edited c.rs",
+    ]);
+    expect(read?.title).toBe("Read c.rs");
+    expect(edit?.target).toBe("/a/b/c.rs");
+  });
+
+  it("draws a file tool with no path as the tool's plain action", () => {
+    const [edit] = steps(call("Edit", {}));
+    expect(edit?.title).toBe("Edited a file");
+  });
+
+  it("calls both searches one thing and both web tools another", () => {
+    const [glob, grep, fetch, search, task] = steps(
+      call("Glob", { pattern: "**/*.ts" }),
+      call("Grep", { pattern: "todo" }),
+      call("WebFetch", { url: "https://example.com/a" }),
+      call("WebSearch", { query: "rust async" }),
+      call("Task", { description: "survey the tests" }),
+    );
+    expect(glob?.title).toBe("Searched files");
+    expect(grep?.title).toBe("Searched files");
+    expect(fetch?.title).toBe("Read the web");
+    expect(fetch?.target).toBe("https://example.com/a");
+    expect(search?.title).toBe("Read the web");
+    expect(search?.target).toBe("rust async");
+    expect(task?.title).toBe("Sent a subagent");
+    expect(task?.target).toBe("survey the tests");
+  });
+});
+
 describe("credentials a command spent", () => {
   // Mirrors `credentials_named_in` in `runtime/mod.rs`. If that wording changes
   // this test is where it is noticed, rather than a transcript quietly losing

@@ -115,6 +115,8 @@ src-tauri/src/
     codex.rs          The other protocol: where a ChatGPT subscription is spent.
     claude.rs         The third, which is a program rather than a protocol:
                       where a Claude subscription is spent, and why it has to be.
+    claude_code.rs    The fourth: an agent that is a whole `claude` session, with
+                      its own tools, folder and memory, not a model.
     catalog.rs        Which models OpenRouter sees doing which kind of work.
     modality.rs       Whether a picture reaches the model that is answering.
   subscription.rs     Signing in to that subscription. A credential, not a wire.
@@ -154,6 +156,8 @@ src-tauri/src/
   boot.rs             Opening a workspace, which is the same act in both hosts.
   server/mod.rs       The second host: the same runtime over HTTP and a
                       socket, behind one token.
+  server/bridge.rs    The one-tool MCP endpoint through which a Claude Code
+                      session sends a message to the crew.
   bin/guacad.rs       The daemon that starts it, configured from the
                       environment because systemd starts it, not a person.
   host.rs             A guacad container, and the one sequence that backs it
@@ -170,6 +174,9 @@ src-tauri/src/
                       what it is told, and how it gives the keyboard back.
   app.rs              Where Tauri is wired up. It and `tray.rs` are the only
                       two files that know Tauri exists.
+scripts/native.sh     Builds and runs the daemon on this machine, outside Docker,
+                      for Claude Code agents that need the machine's program,
+                      login, folders and terminal.
 ```
 
 The agent runtime lives in Rust, not the webview. Each agent is a `tokio` task

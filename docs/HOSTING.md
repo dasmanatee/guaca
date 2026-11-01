@@ -566,6 +566,20 @@ attachment bytes may remain unreferenced. No import executes code or contacts
 a service. Raw volume backup remains the operator’s disaster-recovery option,
 not the migration flow in the app.
 
+## Natively on Linux, for Claude Code agents
+
+A Claude Code agent is a `claude` session, and the program, its login, the
+project folders and the terminal live on the operator's machine, not in the
+image. `./scripts/native.sh` builds the page and a release `guacad` and runs it
+there. It reads `GUACA_ROOT` (default `~/.local/share/guaca-native`),
+`GUACA_BIND` (default `127.0.0.1:8788`) and `GUAC_LOG` (default
+`guac=info,warn`), and serves the page it just built. The token is in
+`$GUACA_ROOT/config/token`.
+
+It runs beside a Docker daemon on a different port, and the two share nothing:
+this store is its own. To bring a crew across, export the group from one and
+import it into the other; see *Moving an existing workspace*.
+
 ## Installing after the hosting changes
 
 `./scripts/install.sh` builds and installs the native macOS application. It

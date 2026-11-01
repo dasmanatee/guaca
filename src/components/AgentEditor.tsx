@@ -254,12 +254,13 @@ export function AgentEditor({ agent, onClose }: Props) {
               <input
                 className="input input--mono"
                 value={draft.cwd ?? ""}
-                placeholder="/home/you/projects/thing"
+                placeholder="Blank: a folder of its own under the workspace"
                 onChange={(event) => patch({ cwd: event.target.value })}
               />
               <span className="field__hint">
-                Where this agent's Claude Code session runs. Absolute path to an existing folder.
-                The model is chosen inside Claude Code: use Resume in terminal and /model.
+                Where this agent's Claude Code session runs: an absolute path to an existing folder,
+                or blank for a folder of its own under the workspace. The model is chosen inside
+                Claude Code: use Resume in terminal and /model.
               </span>
             </label>
             {agent?.claudeSession && (

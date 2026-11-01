@@ -775,6 +775,8 @@ struct Inner {
     /// The bytes of everything anybody has attached. Shared, because one file
     /// sent to four agents is one file.
     files: FileStore,
+    /// See [`OnDisk::desks`].
+    desks: std::path::PathBuf,
     /// When each machine was last asked what it is signed in to, so browsing
     /// does not pay for that question on every call.
     last_signin_scan: Mutex<HashMap<AgentId, Instant>>,
@@ -885,16 +887,22 @@ pub struct OnDisk {
     pub notebooks: crate::notebook::Notebooks,
     /// Attachments, addressed by the SHA-256 of their contents.
     pub files: FileStore,
+    /// Where a Claude Code agent works when the operator named no folder:
+    /// one directory per agent, made on its first turn. A default rather than
+    /// a refusal, because a crew seeded on first boot names no folders and a
+    /// turn that fails on that is a product that does not work out of the box.
+    pub desks: std::path::PathBuf,
 }
 
 impl OnDisk {
-    /// The four of them under one root, which is how they are always arranged.
+    /// The five of them under one root, which is how they are always arranged.
     pub fn under(root: &std::path::Path) -> Self {
         Self {
             workspace: Workspace::new(root.join("workspace")),
             skills: crate::skills::Skills::new(root.join("skills")),
             notebooks: crate::notebook::Notebooks::new(root.join("notebooks")),
             files: FileStore::new(root.join("files")),
+            desks: root.join("desks"),
         }
     }
 }
@@ -919,7 +927,7 @@ impl Runtime {
         disk: OnDisk,
         events: Arc<dyn EventSink>,
     ) -> Self {
-        let OnDisk { workspace, skills, notebooks, files } = disk;
+        let OnDisk { workspace, skills, notebooks, files, desks } = disk;
         Self {
             inner: Arc::new(Inner {
                 workspace_lease: Mutex::new(None),
@@ -939,6 +947,7 @@ impl Runtime {
                 skills,
                 notebooks,
                 files,
+                desks,
                 last_signin_scan: Mutex::new(HashMap::new()),
                 viewer_port: AtomicU16::new(0),
                 webhook_port: AtomicU16::new(0),
@@ -1093,6 +1102,24 @@ impl Runtime {
 
     pub fn webhook_port(&self) -> u16 {
         self.inner.webhook_port.load(Ordering::SeqCst)
+    }
+
+    /// Where this agent's Claude Code session runs: the folder the operator
+    /// named, or its own desk under the workspace when they named none.
+    ///
+    /// Made here, on the turn, rather than when the agent is saved: a desk is
+    /// only wanted once there is a session to put in it, and an agent moved to
+    /// another provider never gets one.
+    fn desk_for(&self, card: &AgentCard) -> std::path::PathBuf {
+        let named = card.cwd.trim();
+        if !named.is_empty() {
+            return std::path::PathBuf::from(named);
+        }
+        let desk = self.inner.desks.join(card.id.to_string());
+        if let Err(err) = std::fs::create_dir_all(&desk) {
+            tracing::warn!(%err, desk = %desk.display(), "could not make the agent's desk");
+        }
+        desk
     }
 
     /// Where Claude Code sessions reach the bridge, and the token it checks,
@@ -3476,7 +3503,7 @@ impl Runtime {
             let bridge = self.mcp_bridge();
             claude_code::Session {
                 agent_id,
-                cwd: card.cwd.clone().into(),
+                cwd: self.desk_for(&card),
                 resume: card.claude_session.clone(),
                 // The bridge is how a session reaches its crew, and only a
                 // served workspace runs one.

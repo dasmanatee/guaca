@@ -271,6 +271,12 @@ struct Crew {
 }
 
 fn crew() -> Crew {
+    crew_in(true)
+}
+
+/// A crew whose one agent either names its working directory or leaves it
+/// blank, which is how a crew seeded on first boot arrives.
+fn crew_in(named: bool) -> Crew {
     let dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let store = Store::open(&dir.path().join("guac.db")).unwrap();
@@ -293,7 +299,7 @@ fn crew() -> Crew {
             color: "#7fb069".into(),
             model: String::new(),
             subscription_model: None,
-            cwd: Some(cwd.path().display().to_string()),
+            cwd: named.then(|| cwd.path().display().to_string()),
             reasoning_effort: None,
             system_prompt: "You are Dana.".into(),
             skills: Vec::new(),
@@ -356,6 +362,27 @@ impl Crew {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_with_no_working_directory_gets_a_desk_of_its_own() {
+    let _records = RECORDS.lock().await;
+    let beside = stand_in();
+    let crew = crew_in(false);
+
+    let run = crew.ask(MARKER);
+    crew.settle(run).await;
+
+    // The turn ran rather than refusing, and it ran under the workspace.
+    assert_eq!(crew.session().as_deref(), Some("fixed-session"), "{:?}", crew.channel());
+    let started_in = recorded(&beside, "cwd");
+    let desks = std::fs::canonicalize(crew._dir.path().join("desks")).unwrap();
+    assert!(
+        Path::new(started_in.trim()).starts_with(&desks),
+        "started in {started_in:?}, not under {}",
+        desks.display()
+    );
+    assert!(started_in.trim().ends_with(&crew.agent.to_string()), "{started_in}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

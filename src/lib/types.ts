@@ -809,7 +809,9 @@ export type Activity =
   | { state: "queued"; depth: number }
   /** Parked mid-turn on a permission request. Waiting on a person, not a model. */
   | { state: "awaitingApproval" }
-  | { state: "paused" };
+  | { state: "paused" }
+  /** Open in the operator's own terminal; its messages wait for the window to close. */
+  | { state: "inTerminal" };
 
 export interface GuardLimits {
   maxHops: number;

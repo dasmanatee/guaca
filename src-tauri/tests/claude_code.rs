@@ -23,7 +23,7 @@ use guac_lib::domain::group::{CleanGroup, InferenceOverrides};
 use guac_lib::domain::ids::{AgentId, RunId};
 use guac_lib::llm::claude_code::{Session, CLEARED};
 use guac_lib::llm::openrouter::{ChatMessage, ChatRequest, LlmClient, LlmError};
-use guac_lib::runtime::events::{RecordingSink, UiEvent};
+use guac_lib::runtime::events::{Activity, RecordingSink, UiEvent};
 use guac_lib::runtime::{OnDisk, Runtime};
 
 /// What the test says, so the stdin the stand-in recorded can be checked for
@@ -462,4 +462,34 @@ async fn a_live_turn_runs_a_command() {
         "{completion:?}"
     );
     assert!(completion.session.is_some(), "{completion:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_open_in_a_terminal_holds_its_inbox_until_the_window_closes() {
+    let _records = RECORDS.lock().await;
+    let _ = stand_in();
+    let crew = crew();
+
+    assert!(crew.runtime.enter_terminal(crew.agent));
+    assert!(!crew.runtime.enter_terminal(crew.agent), "one window per session");
+    assert!(crew.runtime.in_terminal(crew.agent));
+
+    // Two programs writing one session is how a session is corrupted, so
+    // nothing may run while the operator has it open.
+    let run = crew.ask("while you were away");
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    assert_eq!(
+        crew.sink.count_of(|e| matches!(e, UiEvent::RunSettled { run_id, .. } if *run_id == run)),
+        0,
+        "{:?}",
+        crew.channel()
+    );
+    assert_eq!(crew.session(), None, "the program never ran");
+    assert_eq!(crew.runtime.activity_snapshot().get(&crew.agent), Some(&Activity::InTerminal));
+
+    crew.runtime.leave_terminal(crew.agent);
+    assert!(!crew.runtime.in_terminal(crew.agent));
+    crew.settle(run).await;
+    assert_eq!(crew.session().as_deref(), Some("fixed-session"), "{:?}", crew.channel());
+    assert!(recorded(&stand_in(), "stdin").contains("while you were away"));
 }

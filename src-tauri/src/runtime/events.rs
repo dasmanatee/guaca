@@ -31,6 +31,11 @@ pub enum Activity {
     AwaitingApproval,
     /// Not processing; messages accumulate.
     Paused,
+    /// Open in the operator's own terminal, on the session its turns resume.
+    /// Its own state rather than `Paused`, because nothing about the card
+    /// changed: what is holding its messages is a window, and closing that
+    /// window is what lets them through.
+    InTerminal,
 }
 
 impl Activity {
@@ -43,16 +48,17 @@ impl Activity {
     ///
     /// Idle is the only state where a delivery starts work immediately. A
     /// queue that is not empty is work already waiting, a request on the
-    /// operator's desk is a turn parked mid-flight, and a paused agent takes
-    /// nothing off its inbox at all: putting a firing behind any of those is
-    /// the pile-up the option exists to avoid.
+    /// operator's desk is a turn parked mid-flight, and a paused agent or one
+    /// open in a terminal takes nothing off its inbox at all: putting a firing
+    /// behind any of those is the pile-up the option exists to avoid.
     pub fn is_working(self) -> bool {
         match self {
             Activity::Idle => false,
             Activity::Thinking
             | Activity::Queued { .. }
             | Activity::AwaitingApproval
-            | Activity::Paused => true,
+            | Activity::Paused
+            | Activity::InTerminal => true,
         }
     }
 }
@@ -430,6 +436,7 @@ mod tests {
         assert!(Activity::Queued { depth: 1 }.is_working());
         assert!(Activity::AwaitingApproval.is_working());
         assert!(Activity::Paused.is_working());
+        assert!(Activity::InTerminal.is_working());
     }
 
     #[test]

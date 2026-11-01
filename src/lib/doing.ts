@@ -66,6 +66,10 @@ export function doing(id: AgentId, inputs: DoingInputs, now: number): Doing {
       return { text: "needs you", kind: "asking" };
     case "paused":
       return { text: "paused", kind: "paused" };
+    // Drawn as paused because it is held the same way: nothing moves until the
+    // operator closes the window.
+    case "inTerminal":
+      return { text: "In your terminal", kind: "paused" };
     default: {
       // Falling back to a last-active time keeps the column occupied. An
       // empty slot the instant an agent stops typing reads as the row

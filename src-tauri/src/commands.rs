@@ -1948,6 +1948,99 @@ pub async fn set_agent_paused(state: &AppState, id: AgentId, paused: bool) -> Re
     Ok(card)
 }
 
+/// Why a Claude Code agent cannot be opened in a terminal now, or `None` when
+/// it can.
+///
+/// Apart from the command so every refusal is tested without opening a window,
+/// and in the order an operator can act on them: there is nothing to open
+/// before there is a session, and a second window is only a question once a
+/// first one could have opened.
+fn refusal(
+    card: &AgentCard,
+    ghostty: Option<PathBuf>,
+    display: bool,
+    open: bool,
+) -> Option<String> {
+    let Some(session) = card.claude_session.as_deref().filter(|session| !session.is_empty()) else {
+        return Some(
+            "This agent has no Claude Code session yet. Send it a message first, then resume it."
+                .into(),
+        );
+    };
+    if ghostty.is_none() {
+        return Some(format!(
+            "Ghostty is not installed, or is not on this app's PATH. Install Ghostty, or run \
+             `claude --resume {session}` in any terminal."
+        ));
+    }
+    if !display {
+        return Some(format!(
+            "This daemon cannot open a window: it is not running on your desktop. Run it with \
+             scripts/native.sh, or run `claude --resume {session}` in any terminal."
+        ));
+    }
+    if open {
+        return Some("This agent is already open in a terminal.".into());
+    }
+    None
+}
+
+/// Opens a Claude Code agent's session in Ghostty, in the folder it works in.
+///
+/// The agent takes nothing off its inbox until that window closes, because its
+/// turns resume the same session and two programs writing one session corrupt
+/// it. What was sent meanwhile is answered once the window is gone.
+pub async fn resume_in_terminal(state: &AppState, id: AgentId) -> Reply<()> {
+    let card = agent_card(state, id)?;
+    let ghostty = crate::programs::find("ghostty");
+    let display = ["DISPLAY", "WAYLAND_DISPLAY"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
+    let runtime = &state.runtime;
+    if let Some(refused) = refusal(&card, ghostty.clone(), display, runtime.in_terminal(id)) {
+        return Err(CommandError::new("terminal", refused));
+    }
+    let (Some(ghostty), Some(session)) = (ghostty, card.claude_session) else {
+        unreachable!("refusal answers for a missing program and a missing session");
+    };
+    // Two clicks can both pass the check above; only one of them gets the window.
+    if !runtime.enter_terminal(id) {
+        return Err(CommandError::new("terminal", "This agent is already open in a terminal."));
+    }
+
+    let spawned = tokio::process::Command::new(&ghostty)
+        .arg(format!("--working-directory={}", card.cwd))
+        .args(["-e", crate::llm::claude::PROGRAM, "--resume", &session])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        // The window is the operator's, and outlives this call.
+        .kill_on_drop(false)
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(err) => {
+            runtime.leave_terminal(id);
+            return Err(CommandError::new(
+                "terminal",
+                format!(
+                    "Could not start Ghostty at {}: {err}. Run `claude --resume {session}` in any \
+                     terminal.",
+                    ghostty.display()
+                ),
+            ));
+        }
+    };
+    let runtime = runtime.clone();
+    tokio::spawn(async move {
+        if let Err(err) = child.wait().await {
+            tracing::warn!(%err, "lost track of a terminal window; letting the agent work again");
+        }
+        runtime.leave_terminal(id);
+    });
+    Ok(())
+}
+
 /// Keeps an agent at the top of the rail.
 ///
 /// Nothing about the agent changes: it is discoverable, addressable and billed
@@ -3045,6 +3138,88 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.kind, "validation");
+    }
+
+    fn coder(session: Option<&str>) -> AgentCard {
+        AgentCard {
+            id: AgentId::new(),
+            group_id: GroupId::new(),
+            name: "Dana".into(),
+            avatar: "avocado".into(),
+            color: "#7fb069".into(),
+            model: String::new(),
+            subscription_model: String::new(),
+            cwd: "/tmp".into(),
+            claude_session: session.map(str::to_string),
+            reasoning_effort: None,
+            system_prompt: String::new(),
+            skills: Vec::new(),
+            sandbox_id: None,
+            sandbox_envd_token: None,
+            sandbox_traffic_token: None,
+            browser_id: None,
+            has_computer: false,
+            has_browser: false,
+            browser_consent: Consent::default(),
+            runs_errands: false,
+            lifecycle: Lifecycle::Active,
+            pinned: false,
+            rail_order: 0,
+            version: 1,
+            created_at: 0,
+            updated_at: 0,
+            discarded_at: None,
+        }
+    }
+
+    fn ghostty() -> Option<PathBuf> {
+        Some(PathBuf::from("/usr/bin/ghostty"))
+    }
+
+    #[test]
+    fn an_agent_with_no_session_has_nothing_to_resume() {
+        let said = refusal(&coder(None), ghostty(), true, false);
+        assert_eq!(
+            said.as_deref(),
+            Some(
+                "This agent has no Claude Code session yet. Send it a message first, then resume it."
+            )
+        );
+        // A cleared session is the same as none: `/clear` leaves it blank.
+        assert_eq!(refusal(&coder(Some("")), ghostty(), true, false), said);
+        // Before everything else, because nothing else can help.
+        assert_eq!(refusal(&coder(None), None, false, true), said);
+    }
+
+    #[test]
+    fn no_ghostty_says_how_to_resume_it_by_hand() {
+        assert_eq!(
+            refusal(&coder(Some("abc-123")), None, true, false).as_deref(),
+            Some(
+                "Ghostty is not installed, or is not on this app's PATH. Install Ghostty, or run \
+                 `claude --resume abc-123` in any terminal."
+            )
+        );
+    }
+
+    #[test]
+    fn a_daemon_with_no_desktop_cannot_open_a_window() {
+        assert_eq!(
+            refusal(&coder(Some("abc-123")), ghostty(), false, false).as_deref(),
+            Some(
+                "This daemon cannot open a window: it is not running on your desktop. Run it with \
+                 scripts/native.sh, or run `claude --resume abc-123` in any terminal."
+            )
+        );
+    }
+
+    #[test]
+    fn a_second_window_on_one_session_is_refused() {
+        assert_eq!(
+            refusal(&coder(Some("abc-123")), ghostty(), true, true).as_deref(),
+            Some("This agent is already open in a terminal.")
+        );
+        assert_eq!(refusal(&coder(Some("abc-123")), ghostty(), true, false), None);
     }
 
     #[test]

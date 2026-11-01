@@ -638,6 +638,7 @@ fn badge(activity: &Activity) -> String {
         Activity::Queued { depth } => format!("queued ({depth} waiting)"),
         Activity::AwaitingApproval => "waiting on the operator".into(),
         Activity::Paused => "paused".into(),
+        Activity::InTerminal => "open in the operator's terminal".into(),
     }
 }
 

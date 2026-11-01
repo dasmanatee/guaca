@@ -87,6 +87,31 @@ pub fn adopt_operator_path() {
     std::env::set_var("PATH", adopted);
 }
 
+/// Where a program is on this process's `PATH`, as a spawn by name would find
+/// it, or `None` when it is not there.
+///
+/// For the one program started for the operator rather than for a turn: a
+/// window that fails to open has no stderr anybody reads, so it is looked for
+/// before it is started and a missing one is said in a sentence.
+pub fn find(name: &str) -> Option<std::path::PathBuf> {
+    find_in(name, &std::env::var_os("PATH")?)
+}
+
+fn find_in(name: &str, path: &std::ffi::OsStr) -> Option<std::path::PathBuf> {
+    std::env::split_paths(path).map(|dir| dir.join(name)).find(|at| runnable(at))
+}
+
+#[cfg(unix)]
+fn runnable(at: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(at).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn runnable(at: &std::path::Path) -> bool {
+    at.is_file()
+}
+
 /// What this process's `PATH` should become, or `None` for leave it alone.
 ///
 /// Split from the one line that writes it so the whole decision is testable
@@ -276,6 +301,21 @@ mod shells {
         file.flush().unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    #[test]
+    fn a_program_is_found_only_where_it_can_be_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let at = dir.path().join("ghostty");
+        std::fs::write(&at, "#!/bin/sh\n").unwrap();
+        let path = std::env::join_paths(["/nowhere".into(), dir.path().to_path_buf()]).unwrap();
+
+        std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(find_in("ghostty", &path), None, "a file that cannot be run is not the program");
+
+        std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(find_in("ghostty", &path), Some(at));
+        assert_eq!(find_in("claude", &path), None);
     }
 
     #[test]

@@ -48,6 +48,7 @@ function open(
   const handlers = {
     onClose: vi.fn(),
     onEditProfile: vi.fn(),
+    onResumeInTerminal: vi.fn(),
     onTogglePin: vi.fn(),
     onTogglePause: vi.fn(),
     onDuplicate: vi.fn(),
@@ -72,6 +73,16 @@ describe("AgentMenu", () => {
     ]) {
       expect(screen.getByRole("button", { name })).toBeTruthy();
     }
+  });
+
+  it("offers a Claude Code agent's session in a terminal, and nobody else's", () => {
+    const handlers = open(card({ claudeSession: "abc" }), undefined, [], "claudeCode");
+    fireEvent.click(screen.getByRole("button", { name: "Resume in terminal" }));
+    expect(handlers.onResumeInTerminal).toHaveBeenCalledOnce();
+    cleanup();
+
+    open(card({ claudeSession: "abc" }), undefined, [], "compatible");
+    expect(screen.queryByRole("button", { name: "Resume in terminal" })).toBeNull();
   });
 
   it("says resume on an agent that is already paused", () => {

@@ -806,6 +806,12 @@ struct Inner {
     /// it. By agent too because a run is a whole cascade: two Claude Code
     /// agents answering each other run their turns under the same one.
     relays: Mutex<HashMap<RunId, HashMap<AgentId, Relay>>>,
+    /// Agents the operator has open in their own terminal, on the session the
+    /// agent's turns resume. Held for as long as that window is, so nothing
+    /// here writes the session while somebody else is: two programs appending
+    /// to one session is how it is corrupted. In memory only, because the
+    /// window belongs to this process and ends with it.
+    in_terminal: Mutex<HashSet<AgentId>>,
     events: Arc<dyn EventSink>,
 }
 
@@ -920,6 +926,7 @@ impl Runtime {
                 resuming: Mutex::new(HashMap::new()),
                 mcp_bridge: Mutex::new(None),
                 relays: Mutex::new(HashMap::new()),
+                in_terminal: Mutex::new(HashSet::new()),
                 events,
             }),
         }
@@ -1573,6 +1580,40 @@ impl Runtime {
         self.set_activity(id, Activity::Paused);
     }
 
+    /// Holds an agent's inbox while the operator has its session open in a
+    /// terminal. The actor parks at its next message boundary, as a paused one
+    /// does, and what arrives meanwhile queues.
+    ///
+    /// False when it was already held, which is a second window on the same
+    /// session and the caller's to refuse.
+    pub fn enter_terminal(&self, id: AgentId) -> bool {
+        if !self.inner.in_terminal.lock().insert(id) {
+            return false;
+        }
+        self.set_activity(id, Activity::InTerminal);
+        true
+    }
+
+    /// Lets an agent's inbox through again once its terminal has closed.
+    ///
+    /// The flag goes first and the wake second: the actor re-reads the flag
+    /// after it has started waiting, so whichever side of the wake-up it is on
+    /// it sees the window closed.
+    pub fn leave_terminal(&self, id: AgentId) {
+        if !self.inner.in_terminal.lock().remove(&id) {
+            return;
+        }
+        let resume = { self.inner.inboxes.lock().get(&id).map(|inbox| inbox.resume.clone()) };
+        if let Some(resume) = resume {
+            resume.notify_waiters();
+        }
+        self.idle(id);
+    }
+
+    pub fn in_terminal(&self, id: AgentId) -> bool {
+        self.inner.in_terminal.lock().contains(&id)
+    }
+
     pub fn emit(&self, event: UiEvent) {
         self.inner.events.emit(event);
     }
@@ -1649,6 +1690,15 @@ impl Runtime {
     }
 
     fn set_activity(&self, id: AgentId, activity: Activity) {
+        // A turn ending or a message arriving while the operator has the
+        // session open would otherwise read as an agent free to take work,
+        // and nothing would put the badge back until the window closed.
+        let activity = match activity {
+            Activity::Idle | Activity::Queued { .. } if self.in_terminal(id) => {
+                Activity::InTerminal
+            }
+            other => other,
+        };
         let changed = {
             let mut map = self.inner.activity.lock();
             if map.get(&id) == Some(&activity) {
@@ -7884,7 +7934,8 @@ async fn actor_loop(
             continue;
         }
 
-        // A paused agent holds what it has and lets the rest queue behind it.
+        // A paused agent holds what it has and lets the rest queue behind it,
+        // and so does one the operator has open in a terminal.
         //
         // Deletion has to be distinguished from pausing here. Both stop the
         // agent accepting work, but `stop_agent` drops the inbox, which holds
@@ -7904,8 +7955,8 @@ async fn actor_loop(
                     abandoned = true;
                     break;
                 }
-                Some(card) if card.lifecycle.accepts_work() => break,
-                Some(card) => {
+                Some(card) if card.lifecycle.accepts_work() && !runtime.in_terminal(id) => break,
+                Some(_) => {
                     // Registered before the stop is read, and that ordering is
                     // the whole of it. `notify_waiters` only wakes futures that
                     // are already waiting, so a stop landing between the check
@@ -7918,6 +7969,25 @@ async fn actor_loop(
                     let waiter = resume.notified();
                     tokio::pin!(waiter);
                     waiter.as_mut().enable();
+
+                    // A resume or a closed terminal that landed between the
+                    // card read above and the waiter being enabled sent its
+                    // wake-up to nobody, so both are read again now that one
+                    // cannot be missed.
+                    let card = match runtime.inner.store.get_agent(id).ok().flatten() {
+                        Some(card) => card,
+                        None => continue,
+                    };
+                    let held = !card.lifecycle.accepts_work();
+                    if !held && !runtime.in_terminal(id) {
+                        continue;
+                    }
+                    // What the operator undoes to let this agent's work through.
+                    let (away, undo) = if held {
+                        ("was paused", format!("Resume {}", card.name))
+                    } else {
+                        ("was open in your terminal", "Close its terminal".to_string())
+                    };
 
                     // The drain wakes every parked actor for this: a paused
                     // agent's held work is put down like anybody else's, and
@@ -7945,8 +8015,8 @@ async fn actor_loop(
                             Some(first.id),
                             NoticeKind::GuardStop,
                             format!(
-                                "You stopped this conversation while {} was paused, so this never ran. Resume {} and send it again if you still want it.",
-                                card.name, card.name
+                                "You stopped this conversation while {} {away}, so this never ran. {undo} and send it again if you still want it.",
+                                card.name
                             ),
                         );
                         called_off = true;
@@ -7973,8 +8043,8 @@ async fn actor_loop(
                                     Some(queued.id),
                                     NoticeKind::GuardStop,
                                     format!(
-                                        "You stopped this conversation while {} was paused, so this never ran. Resume {} and send it again if you still want it.",
-                                        card.name, card.name
+                                        "You stopped this conversation while {} {away}, so this never ran. {undo} and send it again if you still want it.",
+                                        card.name
                                     ),
                                 );
                                 runtime.finish_turn(id, queued.run_id, 1);
@@ -7984,7 +8054,10 @@ async fn actor_loop(
                         }
                     }
 
-                    runtime.set_activity(id, Activity::Paused);
+                    runtime.set_activity(
+                        id,
+                        if held { Activity::Paused } else { Activity::InTerminal },
+                    );
                     waiter.await;
                 }
             }

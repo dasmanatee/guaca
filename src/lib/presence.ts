@@ -100,6 +100,7 @@ export function presenceOf(
       // reason, which is why a paused agent is not lifted up its section.
       case "idle":
       case "paused":
+      case "inTerminal":
         break;
       default: {
         const unweighed: never = state;

@@ -369,6 +369,7 @@ surface! {
     restore_agent(id: AgentId) -> AgentCard,
     purge_agent(id: AgentId) -> (),
     set_agent_paused(id: AgentId, paused: bool) -> AgentCard,
+    resume_in_terminal(id: AgentId) -> (),
     set_agent_pinned(id: AgentId, pinned: bool) -> AgentCard,
     move_agent(id: AgentId, group_id: GroupId, before: Option<AgentId>) -> AgentCard,
     duplicate_agent(id: AgentId) -> AgentCard,

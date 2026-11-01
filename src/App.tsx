@@ -423,6 +423,7 @@ export default function App() {
           }
           onClose={() => setMenu(null)}
           onEditProfile={(agent) => setEditing(agent)}
+          onResumeInTerminal={(agent) => void onAgent(() => api.resumeInTerminal(agent.id))}
           onTogglePin={(agent) => void onAgent(() => api.setAgentPinned(agent.id, !agent.pinned))}
           // Through the store rather than the API: a move lands the agent at
           // the end of a group it is not in yet, which is a placement only the

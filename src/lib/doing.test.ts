@@ -45,6 +45,11 @@ describe("what a row says an agent is doing", () => {
     expect(said).toEqual({ text: "needs you", kind: "asking" });
   });
 
+  it("says an agent open in the operator's terminal is there, held like a paused one", () => {
+    const said = doing("a", { ...quiet, activity: { a: { state: "inTerminal" } } }, NOW);
+    expect(said).toEqual({ text: "In your terminal", kind: "paused" });
+  });
+
   it("falls back to when it last spoke, and to nothing for one that never has", () => {
     expect(doing("a", { ...quiet, lastActive: { a: NOW - 5 * 60_000 } }, NOW).text).toBe("5m");
     expect(doing("a", quiet, NOW)).toEqual({ text: "", kind: undefined });

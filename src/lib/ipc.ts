@@ -484,6 +484,12 @@ export const api = {
   setAgentPaused: (id: AgentId, paused: boolean) =>
     invoke<AgentCard>("set_agent_paused", { id, paused }),
 
+  /**
+   * Opens a Claude Code agent's session in Ghostty. The agent holds its inbox
+   * until that window closes.
+   */
+  resumeInTerminal: (id: AgentId) => invoke<void>("resume_in_terminal", { id }),
+
   /** Keeps an agent at the top of the rail. Nothing else about it changes. */
   setAgentPinned: (id: AgentId, pinned: boolean) =>
     invoke<AgentCard>("set_agent_pinned", { id, pinned }),

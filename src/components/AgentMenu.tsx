@@ -18,6 +18,8 @@ interface Props {
   provider: Provider | undefined;
   onClose: () => void;
   onEditProfile: (agent: AgentCard) => void;
+  /** Opens its Claude Code session in a terminal. Offered only on that provider. */
+  onResumeInTerminal: (agent: AgentCard) => void;
   onTogglePin: (agent: AgentCard) => void;
   onTogglePause: (agent: AgentCard) => void;
   onDuplicate: (agent: AgentCard) => void;
@@ -53,6 +55,7 @@ export function AgentMenu({
   provider,
   onClose,
   onEditProfile,
+  onResumeInTerminal,
   onTogglePin,
   onTogglePause,
   onDuplicate,
@@ -163,6 +166,7 @@ export function AgentMenu({
         </p>
         {item(agent.lifecycle === "paused" ? "Resume" : "Pause", () => onTogglePause(agent))}
         {item("Edit profile", () => onEditProfile(agent))}
+        {provider === "claudeCode" && item("Resume in terminal", () => onResumeInTerminal(agent))}
         {item(agent.pinned ? "Unpin" : "Pin to top", () => onTogglePin(agent))}
         {item("Duplicate", () => onDuplicate(agent))}
         {/* Absent while there is one group, for the same reason the strip in

@@ -21,7 +21,7 @@ use guac_lib::domain::agent::CleanDraft;
 use guac_lib::domain::envelope::{Envelope, Part};
 use guac_lib::domain::group::{CleanGroup, InferenceOverrides};
 use guac_lib::domain::ids::{AgentId, RunId};
-use guac_lib::llm::claude_code::{Session, CLEARED};
+use guac_lib::llm::claude_code::{Bridge, Session, CLEARED};
 use guac_lib::llm::openrouter::{ChatMessage, ChatRequest, LlmClient, LlmError};
 use guac_lib::runtime::events::{Activity, RecordingSink, UiEvent};
 use guac_lib::runtime::{Busy, OnDisk, Runtime};
@@ -363,12 +363,16 @@ async fn a_first_turn_stores_the_session_and_a_second_resumes_it() {
     let _records = RECORDS.lock().await;
     let beside = stand_in();
     let crew = crew();
+    // As a served workspace sets it. Nothing listens there: this stand-in
+    // never calls it.
+    crew.runtime.set_mcp_bridge(Bridge { url: "http://127.0.0.1:1".into(), token: "t0k".into() });
 
     let run = crew.ask(MARKER);
     crew.settle(run).await;
 
     assert_eq!(crew.session().as_deref(), Some("fixed-session"), "{:?}", crew.channel());
     let first = recorded(&beside, "argv");
+    assert!(first.lines().any(|a| a == "--mcp-config"), "{first}");
     assert!(first.lines().any(|a| a == "--session-id"), "{first}");
     assert!(first.lines().any(|a| a == "--append-system-prompt"), "{first}");
     // The prompt the runtime built for this agent, and how to reach its crew.
@@ -452,6 +456,13 @@ async fn a_claude_code_turn_is_offered_no_tools() {
     for restriction in ["--tools", "--allowedTools", "--disallowedTools"] {
         assert!(!argv.lines().any(|a| a == restriction), "{restriction} in {argv}");
     }
+    // Nor told about any. With no bridge up, not even the one it would reach
+    // its crew through.
+    for tool in ["update_memory", "note_progress", "request_permission", "create_agent"] {
+        assert!(!argv.contains(tool), "{tool} in the prompt: {argv}");
+    }
+    assert!(!argv.contains("your guaca MCP server"), "{argv}");
+    assert!(!argv.lines().any(|a| a == "--mcp-config"), "{argv}");
     assert_eq!(crew.session().as_deref(), Some("fixed-session"), "{:?}", crew.channel());
 }
 

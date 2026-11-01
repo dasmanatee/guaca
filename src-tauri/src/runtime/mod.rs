@@ -3331,6 +3331,9 @@ impl Runtime {
         // asked for anyway. Costs one request per endpoint per six hours, and
         // an endpoint that says nothing leaves everything as it was.
         let modalities = self.inner.modalities.of(&inference, &model).await;
+        // A Claude Code session runs its own tools and is offered none of
+        // Guaca's, so its prompt describes none of them either.
+        let offers_tools = inference.provider != Provider::ClaudeCode;
 
         #[allow(unused_mut)]
         let mut messages = prompt::build_messages(
@@ -3352,6 +3355,7 @@ impl Runtime {
             escalation.as_ref(),
             surfaces,
             modalities,
+            offers_tools,
         );
         // Where this turn's own messages begin: the one `build_messages` folded
         // the batch into, and everything after it. A Claude Code session is
@@ -3363,21 +3367,28 @@ impl Runtime {
         // Beside the system prompt rather than threaded through it: names and
         // one line each, read from disk every turn so a skill a crewmate wrote
         // a moment ago is offered on this one.
-        prompt::add_skills(&mut messages, &self.inner.skills.visible(card.group_id));
-        prompt::add_notebook(&mut messages, &self.inner.notebooks.list(card.id));
-        // Read every turn, like the skills above it: a page a crewmate made or
-        // edited a moment ago is in this one's list, and that list is how an
-        // owner learns somebody else changed its page without being messaged.
-        match self.inner.store.artifacts(Some(card.group_id), LISTED_ARTIFACTS) {
-            Ok(kept) => {
-                let pinned: Vec<_> = self.config().widgets.iter().map(|w| w.artifact_id).collect();
-                prompt::add_artifacts(&mut messages, &kept, &pinned, card.id, now_ms())
+        // Each of these is read with a tool of Guaca's, so a session offered
+        // none is not told about them.
+        if offers_tools {
+            prompt::add_skills(&mut messages, &self.inner.skills.visible(card.group_id));
+            prompt::add_notebook(&mut messages, &self.inner.notebooks.list(card.id));
+            // Read every turn, like the skills above it: a page a crewmate made or
+            // edited a moment ago is in this one's list, and that list is how an
+            // owner learns somebody else changed its page without being messaged.
+            match self.inner.store.artifacts(Some(card.group_id), LISTED_ARTIFACTS) {
+                Ok(kept) => {
+                    let pinned: Vec<_> =
+                        self.config().widgets.iter().map(|w| w.artifact_id).collect();
+                    prompt::add_artifacts(&mut messages, &kept, &pinned, card.id, now_ms())
+                }
+                Err(err) => {
+                    tracing::warn!(%err, "could not read the crew's artifacts for this prompt")
+                }
             }
-            Err(err) => tracing::warn!(%err, "could not read the crew's artifacts for this prompt"),
-        }
-        match self.inner.store.decisions(Some(card.id)) {
-            Ok(decisions) => prompt::add_decisions(&mut messages, &decisions),
-            Err(err) => tracing::warn!(%err, "could not read the agent's decisions"),
+            match self.inner.store.decisions(Some(card.id)) {
+                Ok(decisions) => prompt::add_decisions(&mut messages, &decisions),
+                Err(err) => tracing::warn!(%err, "could not read the agent's decisions"),
+            }
         }
         self.deliver_files(&card, &batch, modalities, &mut messages).await;
         if let Some(brief) = prompt::resumed(&before) {
@@ -3457,17 +3468,21 @@ impl Runtime {
                 Some(ChatMessage::System { content }) => content.as_str(),
                 _ => "",
             };
+            let bridge = self.mcp_bridge();
             claude_code::Session {
                 agent_id,
                 cwd: card.cwd.clone().into(),
                 resume: card.claude_session.clone(),
-                system_prompt: card.claude_session.is_none().then(|| {
-                    format!(
+                // The bridge is how a session reaches its crew, and only a
+                // served workspace runs one.
+                system_prompt: card.claude_session.is_none().then(|| match &bridge {
+                    Some(_) => format!(
                         "{system}\n\nTo reach a crewmate, call the send_message tool your guaca \
                          MCP server provides."
-                    )
+                    ),
+                    None => system.to_string(),
                 }),
-                bridge: self.mcp_bridge().map(|bridge| claude_code::Bridge {
+                bridge: bridge.map(|bridge| claude_code::Bridge {
                     url: format!("{}/v1/claude-code/mcp/{agent_id}/{run_id}", bridge.url),
                     token: bridge.token,
                 }),

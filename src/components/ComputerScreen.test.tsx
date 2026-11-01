@@ -36,7 +36,6 @@ function card(id: string, name: string, given = true): AgentCard {
     model: "m",
     subscriptionModel: "",
     cwd: "",
-    claudeModel: "",
     claudeSession: null,
     systemPrompt: "",
     skills: [],

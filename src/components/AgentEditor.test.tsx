@@ -65,7 +65,6 @@ function card(model = "", subscriptionModel = ""): AgentCard {
     model,
     subscriptionModel,
     cwd: "",
-    claudeModel: "",
     claudeSession: null,
     systemPrompt: "",
     skills: [],
@@ -331,14 +330,14 @@ it("offers no errands switch while the agent is still being created", async () =
   expect(screen.queryByRole("checkbox", { name: /^Errands/ })).toBeNull();
 });
 
-it("asks a Claude Code agent for a directory and a model, and no other provider", () => {
+it("asks a Claude Code agent for a directory and never a model, and no other provider", () => {
   const code = aGroup({
     name: "Code",
     inference: { ...aGroup().inference, provider: "claudeCode" },
   });
   const { unmount } = open({ ...card(), groupId: code.id }, [code]);
   expect(screen.getByLabelText(/^Working directory/)).toBeTruthy();
-  expect(screen.getByLabelText(/^Model/)).toBeTruthy();
+  expect(screen.queryByLabelText(/^Model/)).toBeNull();
   expect(screen.getByLabelText(/^Skills/)).toBeTruthy();
   unmount();
 

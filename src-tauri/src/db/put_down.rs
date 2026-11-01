@@ -282,7 +282,6 @@ mod tests {
                 model: String::new(),
                 subscription_model: None,
                 cwd: None,
-                claude_model: None,
                 reasoning_effort: None,
                 system_prompt: String::new(),
                 skills: vec![],

@@ -79,7 +79,6 @@ function anAgent(name: string, group = CREW): AgentCard {
     model: "",
     subscriptionModel: "",
     cwd: "",
-    claudeModel: "",
     claudeSession: null,
     systemPrompt: "",
     skills: [],

@@ -698,7 +698,6 @@ mod tests {
                 model: "test".into(),
                 subscription_model: None,
                 cwd: None,
-                claude_model: None,
                 reasoning_effort: None,
                 system_prompt: String::new(),
                 skills: vec![],

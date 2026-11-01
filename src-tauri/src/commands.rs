@@ -2007,10 +2007,9 @@ pub async fn duplicate_agent(state: &AppState, id: AgentId) -> Reply<AgentCard> 
         color: original.color,
         model: original.model,
         subscription_model: Some(original.subscription_model),
-        // The working directory and model, not the session: a copy starts its
+        // The working directory, not the session: a copy starts its
         // own conversation.
         cwd: Some(original.cwd),
-        claude_model: Some(original.claude_model),
         reasoning_effort: original.reasoning_effort,
         system_prompt: original.system_prompt,
         skills: original.skills,

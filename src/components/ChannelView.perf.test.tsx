@@ -69,7 +69,6 @@ function agent(id: string, name: string): AgentCard {
     model: "",
     subscriptionModel: "",
     cwd: "",
-    claudeModel: "",
     claudeSession: null,
     systemPrompt: "",
     skills: [],

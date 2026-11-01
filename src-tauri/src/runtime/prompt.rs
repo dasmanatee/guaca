@@ -1567,7 +1567,6 @@ mod tests {
             model: "test/model".into(),
             subscription_model: String::new(),
             cwd: String::new(),
-            claude_model: String::new(),
             claude_session: None,
             reasoning_effort: None,
             system_prompt: "You coordinate the kitchen.".into(),

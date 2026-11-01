@@ -38,7 +38,6 @@ function card(id: string, name: string, given = true, consent: BrowserConsent = 
     model: "m",
     subscriptionModel: "",
     cwd: "",
-    claudeModel: "",
     claudeSession: null,
     systemPrompt: "",
     skills: [],

@@ -118,7 +118,6 @@ function agent(name: string, railOrder = 0): AgentCard {
     model: "test/model",
     subscriptionModel: "",
     cwd: "",
-    claudeModel: "",
     claudeSession: null,
     systemPrompt: "",
     skills: ["testing"],

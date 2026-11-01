@@ -22,7 +22,6 @@ function agent(name: string, discardedAt: number | null): AgentCard {
     model: "",
     subscriptionModel: "",
     cwd: "",
-    claudeModel: "",
     claudeSession: null,
     systemPrompt: "",
     skills: [],

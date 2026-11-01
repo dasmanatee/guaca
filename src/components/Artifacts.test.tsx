@@ -74,7 +74,6 @@ function agent(id: string, name: string, groupId = DEFAULT_GROUP): AgentCard {
     model: "m",
     subscriptionModel: "",
     cwd: "",
-    claudeModel: "",
     claudeSession: null,
     systemPrompt: "",
     skills: [],

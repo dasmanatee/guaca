@@ -184,7 +184,6 @@ pub fn live_crew_watched(
                     .unwrap_or_else(|| config.inference.default_model.clone()),
                 subscription_model: None,
                 cwd: None,
-                claude_model: None,
                 reasoning_effort: None,
                 system_prompt: agent.system_prompt(),
                 skills: agent.skills.iter().map(|s| (*s).to_string()).collect(),

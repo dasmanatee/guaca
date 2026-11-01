@@ -23,7 +23,6 @@ function agent(name: string, extra: Partial<AgentCard> = {}): AgentCard {
     model: "test/model",
     subscriptionModel: "",
     cwd: "",
-    claudeModel: "",
     claudeSession: null,
     systemPrompt: "",
     skills: [],

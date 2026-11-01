@@ -174,7 +174,6 @@ fn new_card(draft: &CleanDraft, rail_order: i32, fallback: GroupId) -> AgentCard
         model: draft.model.clone(),
         subscription_model: draft.subscription_model.clone().unwrap_or_default(),
         cwd: draft.cwd.clone().unwrap_or_default(),
-        claude_model: draft.claude_model.clone().unwrap_or_default(),
         claude_session: None,
         reasoning_effort: draft.reasoning_effort,
         system_prompt: draft.system_prompt.clone(),
@@ -214,8 +213,8 @@ fn bottom_of_rail(conn: &rusqlite::Connection) -> Result<i32, StoreError> {
 /// single create and a batch inside a transaction; `Transaction` derefs here.
 fn insert_agent(conn: &rusqlite::Connection, card: &AgentCard) -> Result<(), StoreError> {
     conn.execute(
-        "INSERT INTO agents (id,name,avatar,color,model,system_prompt,skills,lifecycle,version,created_at,updated_at,group_id,rail_order,reasoning_effort,subscription_model,cwd,claude_model)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+        "INSERT INTO agents (id,name,avatar,color,model,system_prompt,skills,lifecycle,version,created_at,updated_at,group_id,rail_order,reasoning_effort,subscription_model,cwd)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
         params![
             card.id.to_string(),
             card.name,
@@ -233,7 +232,6 @@ fn insert_agent(conn: &rusqlite::Connection, card: &AgentCard) -> Result<(), Sto
             card.reasoning_effort.map(|e| e.as_str()),
             card.subscription_model,
             card.cwd,
-            card.claude_model,
         ],
     )
     .map_err(|e| classify(e, &card.name))?;
@@ -402,7 +400,7 @@ impl Store {
                         version = version + 1, updated_at=?8,
                         group_id = coalesce(?9, group_id), reasoning_effort=?10,
                         subscription_model = coalesce(?11, subscription_model),
-                        cwd = coalesce(?12, cwd), claude_model = coalesce(?13, claude_model)
+                        cwd = coalesce(?12, cwd)
                   WHERE id=?1",
                 params![
                     id.to_string(),
@@ -417,7 +415,6 @@ impl Store {
                     draft.reasoning_effort.map(|e| e.as_str()),
                     draft.subscription_model,
                     draft.cwd,
-                    draft.claude_model,
                 ],
             )
             .map_err(|e| classify(e, &draft.name))?;
@@ -3880,7 +3877,7 @@ pub(super) type RowResult<T> = Result<Result<T, StoreError>, rusqlite::Error>;
 /// one of the five queries that share this mapper and not the others is four
 /// reads that silently take the wrong field, which is what a card carrying
 /// somebody else's sandbox token looks like on the way out.
-const AGENT_COLUMNS: &str = "id,name,avatar,color,model,system_prompt,skills,lifecycle,version,created_at,updated_at,group_id,sandbox_id,sandbox_envd_token,sandbox_traffic_token,pinned,rail_order,browser_id,has_computer,has_browser,browser_consent,discarded_at,reasoning_effort,runs_errands,subscription_model,cwd,claude_model,claude_session";
+const AGENT_COLUMNS: &str = "id,name,avatar,color,model,system_prompt,skills,lifecycle,version,created_at,updated_at,group_id,sandbox_id,sandbox_envd_token,sandbox_traffic_token,pinned,rail_order,browser_id,has_computer,has_browser,browser_consent,discarded_at,reasoning_effort,runs_errands,subscription_model,cwd,claude_session";
 
 fn read_effort(
     row: &Row<'_>,
@@ -3922,8 +3919,7 @@ fn row_to_card(row: &Row<'_>) -> RowResult<AgentCard> {
             model: row.get(4)?,
             subscription_model: row.get(24)?,
             cwd: row.get(25)?,
-            claude_model: row.get(26)?,
-            claude_session: row.get(27)?,
+            claude_session: row.get(26)?,
             reasoning_effort: read_effort(row, 22)?,
             system_prompt: row.get(5)?,
             skills,
@@ -4576,7 +4572,6 @@ mod tests {
             model: "anthropic/claude-sonnet-4.5".into(),
             subscription_model: None,
             cwd: None,
-            claude_model: None,
             reasoning_effort: None,
             system_prompt: "be useful".into(),
             skills: vec!["coordination".into()],
@@ -4626,15 +4621,11 @@ mod tests {
     }
 
     #[test]
-    fn a_claude_code_agent_keeps_its_directory_model_and_session() {
+    fn a_claude_code_agent_keeps_its_directory_and_session() {
         let f = fixture();
-        let made = CleanDraft {
-            cwd: Some("/tmp".into()),
-            claude_model: Some("opus".into()),
-            ..draft("Coder")
-        };
+        let made = CleanDraft { cwd: Some("/tmp".into()), ..draft("Coder") };
         let agent = f.store.create_agent(&made).unwrap();
-        assert_eq!((agent.cwd.as_str(), agent.claude_model.as_str()), ("/tmp", "opus"));
+        assert_eq!(agent.cwd, "/tmp");
         assert_eq!(agent.claude_session, None);
 
         f.store.set_claude_session(agent.id, Some("abc")).unwrap();
@@ -4642,9 +4633,9 @@ mod tests {
         assert_eq!(read.claude_session.as_deref(), Some("abc"));
         assert_eq!(read.version, agent.version, "the session is bookkeeping, not an edit");
 
-        // An edit that names neither leaves both where they were.
+        // An edit that names no directory leaves it and the session where they were.
         let edited = f.store.update_agent(agent.id, &draft("Coder")).unwrap();
-        assert_eq!((edited.cwd.as_str(), edited.claude_model.as_str()), ("/tmp", "opus"));
+        assert_eq!(edited.cwd, "/tmp");
         assert_eq!(edited.claude_session.as_deref(), Some("abc"));
 
         f.store.set_claude_session(agent.id, None).unwrap();

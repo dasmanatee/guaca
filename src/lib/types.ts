@@ -758,8 +758,6 @@ export interface AgentCard {
   subscriptionModel: string;
   /** Where a Claude Code agent's session runs. Blank on every other provider. */
   cwd: string;
-  /** The model Claude Code is told to run. Blank inherits the program's own. */
-  claudeModel: string;
   /** The session the program keeps on disk, once it has named one. Read-only:
    *  only the runtime writes it. */
   claudeSession: string | null;
@@ -800,7 +798,6 @@ export interface AgentDraft {
   subscriptionModel?: string;
   /** Omitted means "leave it as it is", like `subscriptionModel`. */
   cwd?: string;
-  claudeModel?: string;
   reasoningEffort?: ReasoningEffort | null;
   systemPrompt: string;
   skills: string[];

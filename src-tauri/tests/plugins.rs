@@ -640,7 +640,6 @@ fn crew(store: &Store, group: GroupId, name: &str) -> AgentId {
             model: "anthropic/claude-sonnet-4.5".to_string(),
             subscription_model: None,
             cwd: None,
-            claude_model: None,
             reasoning_effort: None,
             system_prompt: "be useful".to_string(),
             skills: Vec::new(),

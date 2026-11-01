@@ -54,7 +54,6 @@ function agent(name: string, groupId = KITCHEN): AgentCard {
     model: "",
     subscriptionModel: "",
     cwd: "",
-    claudeModel: "",
     claudeSession: null,
     systemPrompt: "",
     skills: [],

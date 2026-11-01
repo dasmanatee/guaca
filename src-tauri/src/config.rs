@@ -205,13 +205,13 @@ impl InferenceConfig {
     /// `Claude` has no field to read and does not gain one. The model belongs to
     /// the program, which is signed in, configured and updated somewhere this
     /// app does not reach. What comes back is a label rather than a model id, and the model
-    /// the program actually ran is reported in its own stream. `ClaudeCode`
-    /// returns a real default model, since that program is told which to run.
+    /// the program actually ran is reported in its own stream. `ClaudeCode` is
+    /// the same program and answers the same way.
     pub fn active_model(&self) -> &str {
         match self.provider {
             Provider::Chatgpt => &self.subscription_model,
             Provider::Claude => crate::llm::claude::MODEL_LABEL,
-            Provider::ClaudeCode => crate::llm::claude_code::DEFAULT_MODEL,
+            Provider::ClaudeCode => crate::llm::claude_code::MODEL_LABEL,
             Provider::Compatible => &self.default_model,
         }
     }
@@ -891,7 +891,7 @@ mod tests {
         let cfg = InferenceConfig { provider: Provider::ClaudeCode, ..InferenceConfig::default() };
         assert!(cfg.is_ready());
         assert_eq!(cfg.endpoint(), "claude");
-        assert_eq!(cfg.active_model(), "sonnet");
+        assert_eq!(cfg.active_model(), crate::llm::claude_code::MODEL_LABEL);
     }
 
     #[test]

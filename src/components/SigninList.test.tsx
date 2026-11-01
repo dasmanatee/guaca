@@ -30,7 +30,6 @@ function card(over: Partial<AgentCard> = {}): AgentCard {
     model: "m",
     subscriptionModel: "",
     cwd: "",
-    claudeModel: "",
     claudeSession: null,
     systemPrompt: "",
     skills: [],

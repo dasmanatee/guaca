@@ -35,7 +35,6 @@ export function AgentEditor({ agent, onClose }: Props) {
     model: agent?.model ?? "",
     subscriptionModel: agent?.subscriptionModel ?? "",
     cwd: agent?.cwd ?? "",
-    claudeModel: agent?.claudeModel ?? "",
     reasoningEffort: agent?.reasoningEffort ?? null,
     systemPrompt: agent?.systemPrompt ?? "",
     skills: agent?.skills ?? [],
@@ -260,18 +259,7 @@ export function AgentEditor({ agent, onClose }: Props) {
               />
               <span className="field__hint">
                 Where this agent's Claude Code session runs. Absolute path to an existing folder.
-              </span>
-            </label>
-            <label className="field">
-              <span className="field__label">Model</span>
-              <input
-                className="input input--mono"
-                value={draft.claudeModel ?? ""}
-                placeholder="sonnet"
-                onChange={(event) => patch({ claudeModel: event.target.value })}
-              />
-              <span className="field__hint">
-                A Claude model alias or full name, passed to claude --model.
+                The model is chosen inside Claude Code: use Resume in terminal and /model.
               </span>
             </label>
             {agent?.claudeSession && (

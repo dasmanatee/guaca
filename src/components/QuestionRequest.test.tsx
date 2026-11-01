@@ -31,7 +31,6 @@ const ANALYST: AgentCard = {
   model: "",
   subscriptionModel: "",
   cwd: "",
-  claudeModel: "",
   claudeSession: null,
   systemPrompt: "",
   skills: [],

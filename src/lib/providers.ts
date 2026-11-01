@@ -150,12 +150,12 @@ export function onOpenRouter(group: Group | undefined, settings: Settings | null
  * group's. `AgentCard::own_model` on the Rust side, which is what a turn reads.
  *
  * Each provider has a field of its own because they share no model names, so a
- * model kept for the other one is never shown as the one running. Claude reads
- * neither, and Claude Code reads `claudeModel`. An unknown provider is the default the backend has, a key.
+ * model kept for the other one is never shown as the one running. Claude and
+ * Claude Code read neither: the model is the program's own setting. An unknown
+ * provider is the default the backend has, a key.
  */
 export function ownModel(agent: AgentCard, provider: ProviderKind | null | undefined): string {
-  if (provider === "claude") return "";
-  if (provider === "claudeCode") return agent.claudeModel.trim();
+  if (provider === "claude" || provider === "claudeCode") return "";
   return (provider === "chatgpt" ? agent.subscriptionModel : agent.model).trim();
 }
 

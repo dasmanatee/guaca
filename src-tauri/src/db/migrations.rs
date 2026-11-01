@@ -1887,11 +1887,10 @@ ALTER TABLE agents DROP COLUMN gate;
     (
         66,
         r#"
--- A Claude Code agent is a session rather than a model: where it runs, which
--- model its program is told to use, and the session the program keeps on disk
--- that every turn resumes. Blank on every other provider, which ignores them.
+-- A Claude Code agent is a session: where it runs, and the session the program
+-- keeps on disk that every turn resumes. Blank on every other provider, which
+-- ignores them.
 ALTER TABLE agents ADD COLUMN cwd TEXT NOT NULL DEFAULT '';
-ALTER TABLE agents ADD COLUMN claude_model TEXT NOT NULL DEFAULT '';
 ALTER TABLE agents ADD COLUMN claude_session TEXT;
 "#,
     ),

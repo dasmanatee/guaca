@@ -49,8 +49,12 @@ pub struct Bridge {
 /// The program that is run, found on `PATH` like [`super::claude::PROGRAM`].
 pub const PROGRAM: &str = "claude";
 
-/// The model an agent runs when neither it nor its group names one.
-pub const DEFAULT_MODEL: &str = "sonnet";
+/// What this provider reports as its model.
+///
+/// A label, not a model id. Which model runs is the session's own choice, as
+/// in a terminal, and this app does not pass `--model`, so there is nothing
+/// truthful to put here but the name of the thing that decided.
+pub const MODEL_LABEL: &str = "Claude Code's own model";
 
 /// What the operator types in the channel to start the agent over.
 pub const CLEAR: &str = "/clear";

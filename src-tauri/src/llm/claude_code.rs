@@ -226,10 +226,11 @@ pub struct Fold {
     /// and not the tool, so the name and input are carried until it arrives.
     open: BTreeMap<String, (String, serde_json::Value)>,
     answered: bool,
-    /// Whether a local command answered in its own words. `/compact` usually
-    /// does, and when it does the program's line is the reply and nothing is
-    /// added to it.
-    said_locally: bool,
+    /// A local command's printed output, held until the result frame decides
+    /// whether it is the reply. It is not always the truth: a `/compact` with
+    /// nothing to compact prints "Compacted" and then says in its result that
+    /// it did not.
+    local_stdout: Option<String>,
     /// How a compaction ended, from its status frame, and the token counts its
     /// boundary frame reported. The reply when the program's own line never
     /// came, so a compaction is never answered with silence.
@@ -378,8 +379,7 @@ pub fn fold<F: FnMut(Token<'_>)>(
                     .map(str::trim)
                     .filter(|output| !output.is_empty());
                 if let Some(output) = output {
-                    state.say(output, on_token);
-                    state.said_locally = true;
+                    state.local_stdout = Some(output.to_string());
                 }
                 return Ok(false);
             }
@@ -426,13 +426,17 @@ pub fn fold<F: FnMut(Token<'_>)>(
                 let said = said.trim();
                 state.failed =
                     Some(if said.is_empty() { "it reported no reason" } else { said }.to_string());
-            } else if !state.said_locally {
-                // In order of whose words they are: the program's result, then
-                // this app's account of a compaction it saw happen.
-                if frame.local_command.is_some() && !said.is_empty() {
-                    state.say(&said, on_token);
-                } else if let Some(sentence) = state.compaction() {
-                    state.say(&sentence, on_token);
+            } else {
+                // Exactly one answer to a local command, by how much it knows:
+                // the result's verdict, then what the command printed, then this
+                // app's account of a compaction it saw happen.
+                let answer = if frame.local_command.is_some() && !said.is_empty() {
+                    Some(said)
+                } else {
+                    state.local_stdout.take().or_else(|| state.compaction())
+                };
+                if let Some(answer) = answer {
+                    state.say(&answer, on_token);
                 }
             }
             state.answered = true;
@@ -886,6 +890,17 @@ mod tests {
         // Without the boundary there are no counts to quote.
         let (state, _) = fold_all(&[COMPACTING, COMPACTED, COMMAND_DONE]);
         assert_eq!(state.content, "Compacted the session.");
+    }
+
+    #[test]
+    fn a_local_command_is_answered_once_and_by_its_result() {
+        // A second `/compact` on a compacted session prints "Compacted" and
+        // then says in its result that it did not. The result is the truth.
+        let refused =
+            COMMAND_DONE.replace(r#""result":"""#, r#""result":"Not enough messages to compact.""#);
+        let (state, seen) = fold_all(&[STDOUT, &refused]);
+        assert_eq!(state.content, "Not enough messages to compact.");
+        assert_eq!(seen, ["text:Not enough messages to compact."]);
     }
 
     #[test]

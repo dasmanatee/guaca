@@ -224,6 +224,7 @@ impl Runtime {
             }
 
             let request = ChatRequest {
+                claude_code: None,
                 model: from.model.to_string(),
                 messages: messages.clone(),
                 tools: offered.to_vec(),

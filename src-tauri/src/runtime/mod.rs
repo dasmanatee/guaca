@@ -1416,6 +1416,7 @@ impl Runtime {
     /// that says nothing.
     pub async fn probe(&self, config: &AppConfig) -> Result<String, LlmError> {
         let request = ChatRequest {
+            claude_code: None,
             model: config.inference.active_model().to_string(),
             messages: vec![
                 ChatMessage::system("Reply with the single word: ok"),
@@ -3201,6 +3202,7 @@ impl Runtime {
             }
 
             let request = ChatRequest {
+                claude_code: None,
                 model: model.clone(),
                 messages: messages.clone(),
                 tools: offered.clone(),
@@ -7917,6 +7919,24 @@ impl Pen {
                 self.thought_drawn = true;
             }
             Token::Reasoning(_) => {}
+            // Flushed first, so the chip lands after the words that led to it.
+            Token::ToolStarted { call_id, name, arguments } => {
+                self.flush();
+                self.events.emit(UiEvent::ToolStarted {
+                    message_id: self.message_id,
+                    call_id: call_id.to_string(),
+                    name: name.to_string(),
+                    arguments: arguments.clone(),
+                });
+            }
+            Token::ToolFinished { call_id, part } => {
+                self.flush();
+                self.events.emit(UiEvent::ToolFinished {
+                    message_id: self.message_id,
+                    call_id: call_id.to_string(),
+                    part: part.clone(),
+                });
+            }
         }
         if self.last.elapsed() >= PEN_FLUSH {
             self.flush();
@@ -8005,6 +8025,39 @@ fn claimed_sandboxes(cards: &[AgentCard]) -> std::collections::HashSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tool_the_provider_ran_lands_after_the_text_held_before_it() {
+        // The coalescing buffer would otherwise hold "a" past the chip and the
+        // transcript would read the tool before the sentence that led to it.
+        let sink = events::RecordingSink::new();
+        let id = MessageId::new();
+        let mut pen = Pen::new(sink.clone(), id, AgentId::new(), "", "");
+        pen.write(Token::Text("a"));
+        pen.write(Token::ToolStarted {
+            call_id: "1",
+            name: "Bash",
+            arguments: &serde_json::json!({"command": "ls"}),
+        });
+        pen.write(Token::ToolFinished {
+            call_id: "1",
+            part: &Part::tool_call(
+                "Bash",
+                serde_json::json!({}),
+                ToolOutcome::Ok { summary: "ok".into() },
+            ),
+        });
+        pen.flush();
+        let seen = sink.snapshot();
+        assert!(
+            matches!(&seen[..], [
+            UiEvent::StreamDelta { text, .. },
+            UiEvent::ToolStarted { name, .. },
+            UiEvent::ToolFinished { call_id, .. },
+        ] if text == "a" && name == "Bash" && call_id == "1"),
+            "{seen:?}"
+        );
+    }
 
     fn card(lifecycle: Lifecycle, sandbox: &str) -> AgentCard {
         AgentCard {

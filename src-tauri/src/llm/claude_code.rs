@@ -7,6 +7,31 @@
 //! the operator is asking for by choosing it; Guaca carries messages in and
 //! out and no longer decides what the agent may do.
 
+use std::path::PathBuf;
+
+use crate::domain::ids::AgentId;
+
+/// What one Claude Code turn needs to know about who it is speaking for.
+///
+/// Carried on the request rather than held by the client, because the client is
+/// shared by every agent and these belong to exactly one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Session {
+    pub agent_id: AgentId,
+    pub cwd: PathBuf,
+    pub resume: Option<String>,
+    /// First turn only.
+    pub system_prompt: Option<String>,
+    pub bridge: Option<Bridge>,
+}
+
+/// Where the session reaches Guaca's own tools, and the credential for it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bridge {
+    pub url: String,
+    pub token: String,
+}
+
 /// The program that is run, found on `PATH` like [`super::claude::PROGRAM`].
 pub const PROGRAM: &str = "claude";
 

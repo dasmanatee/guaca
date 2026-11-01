@@ -735,6 +735,8 @@ where
         finish_reason: Some(if tool_calls.is_empty() { "stop" } else { "tool_calls" }.to_string()),
         tool_calls,
         usage,
+        work: Vec::new(),
+        session: None,
     })
 }
 
@@ -823,6 +825,7 @@ mod tests {
     #[test]
     fn a_system_message_becomes_instructions_rather_than_input() {
         let request = ChatRequest {
+            claude_code: None,
             model: "m".into(),
             messages: vec![ChatMessage::system("be terse"), ChatMessage::user("hello")],
             tools: Vec::new(),
@@ -839,6 +842,7 @@ mod tests {
     #[test]
     fn several_system_messages_are_joined_in_order() {
         let request = ChatRequest {
+            claude_code: None,
             model: "m".into(),
             messages: vec![
                 ChatMessage::system("first"),
@@ -859,6 +863,7 @@ mod tests {
         // The endpoint rejects the parameter rather than ignoring it, so one
         // leaking through fails every turn of every agent.
         let request = ChatRequest {
+            claude_code: None,
             model: "m".into(),
             messages: vec![ChatMessage::system("s"), ChatMessage::user("u")],
             tools: Vec::new(),
@@ -871,6 +876,7 @@ mod tests {
     #[test]
     fn nothing_is_stored_server_side_and_the_stream_is_asked_for() {
         let request = ChatRequest {
+            claude_code: None,
             model: "m".into(),
             messages: vec![ChatMessage::user("u")],
             tools: Vec::new(),
@@ -896,6 +902,7 @@ mod tests {
     #[test]
     fn a_tool_is_flat_rather_than_nested_under_function() {
         let request = ChatRequest {
+            claude_code: None,
             model: "m".into(),
             messages: vec![ChatMessage::user("u")],
             tools: vec![spec()],
@@ -916,6 +923,7 @@ mod tests {
     #[test]
     fn no_tools_means_no_tool_choice() {
         let request = ChatRequest {
+            claude_code: None,
             model: "m".into(),
             messages: vec![ChatMessage::user("u")],
             tools: Vec::new(),
@@ -929,6 +937,7 @@ mod tests {
     #[test]
     fn a_tool_result_is_filed_under_the_call_it_answers() {
         let request = ChatRequest {
+            claude_code: None,
             model: "m".into(),
             messages: vec![
                 ChatMessage::user("what is the weather"),
@@ -966,6 +975,7 @@ mod tests {
     #[test]
     fn an_assistant_turn_that_only_called_a_tool_sends_no_empty_message() {
         let request = ChatRequest {
+            claude_code: None,
             model: "m".into(),
             messages: vec![ChatMessage::Assistant {
                 content: Some(String::new()),
@@ -987,6 +997,7 @@ mod tests {
     #[test]
     fn what_an_assistant_said_is_output_text_not_input_text() {
         let request = ChatRequest {
+            claude_code: None,
             model: "m".into(),
             messages: vec![ChatMessage::assistant("I looked it up")],
             tools: Vec::new(),
@@ -1000,6 +1011,7 @@ mod tests {
     #[test]
     fn a_screenshot_becomes_an_input_image_with_a_flat_url() {
         let request = ChatRequest {
+            claude_code: None,
             model: "m".into(),
             messages: vec![ChatMessage::user_seeing(
                 "what is on screen",
@@ -1020,6 +1032,7 @@ mod tests {
     #[test]
     fn an_image_part_is_recognized_however_it_was_built() {
         let request = ChatRequest {
+            claude_code: None,
             model: "m".into(),
             messages: vec![ChatMessage::User {
                 content: UserContent::Parts(vec![ContentPart::ImageUrl {
@@ -1077,6 +1090,7 @@ mod tests {
         let result = consume(response, "test", Duration::from_secs(5), &mut |token| match token {
             Token::Text(t) => seen.push(format!("text:{t}")),
             Token::Reasoning(t) => seen.push(format!("think:{t}")),
+            _ => {}
         })
         .await;
         (result, seen)

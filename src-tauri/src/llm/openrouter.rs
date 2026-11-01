@@ -147,12 +147,15 @@ impl Serialize for ToolSpec {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
     pub tools: Vec<ToolSpec>,
     pub temperature: Option<f32>,
+    /// Set only by a Claude Code turn, which is the one provider that needs to
+    /// know which agent, folder and session it is speaking for.
+    pub claude_code: Option<crate::llm::claude_code::Session>,
 }
 
 #[derive(Serialize)]
@@ -197,12 +200,17 @@ pub struct ToolCall {
 /// hashed, never sent back to a model. With a single `&str` callback the two
 /// were the same thing by the time anyone could tell them apart, and the only
 /// way back would be parsing prose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Token<'a> {
     /// Part of what the model is saying.
     Text(&'a str),
     /// Part of how it got there, when the provider publishes any.
     Reasoning(&'a str),
+    /// A tool the provider's own program is running, for the chips. Never a
+    /// call the runtime executes: it is already underway when this arrives.
+    ToolStarted { call_id: &'a str, name: &'a str, arguments: &'a serde_json::Value },
+    /// How that tool ended, paired with its start by `call_id`.
+    ToolFinished { call_id: &'a str, part: &'a crate::domain::envelope::Part },
 }
 
 /// What a transport writes between two pieces of working the wire kept apart.
@@ -236,6 +244,11 @@ pub struct Completion {
     /// None when the provider did not report any. Never guessed: a made-up
     /// token count is worse than no token count.
     pub usage: Option<Usage>,
+    /// Parts for tools the provider ran itself, so the transcript can keep what
+    /// the runtime never saw it do.
+    pub work: Vec<crate::domain::envelope::Part>,
+    /// The provider's session to keep. `Some("")` means "forget it".
+    pub session: Option<String>,
 }
 
 /// What one model call cost, as the provider counted it.
@@ -765,7 +778,14 @@ impl LlmClient {
             return Err(LlmError::Truncated);
         }
 
-        Ok(Completion { content, tool_calls, finish_reason, usage })
+        Ok(Completion {
+            content,
+            tool_calls,
+            finish_reason,
+            usage,
+            work: Vec::new(),
+            session: None,
+        })
     }
 }
 
@@ -836,6 +856,7 @@ mod tests {
 
     fn request() -> ChatRequest {
         ChatRequest {
+            claude_code: None,
             model: "test/model".into(),
             messages: vec![ChatMessage::user("hello")],
             tools: Vec::new(),
@@ -857,6 +878,7 @@ mod tests {
         |token| match token {
             Token::Text(text) => tokens.push(("text", text.to_string())),
             Token::Reasoning(text) => tokens.push(("reasoning", text.to_string())),
+            _ => {}
         }
     }
 

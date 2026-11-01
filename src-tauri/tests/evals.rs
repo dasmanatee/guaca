@@ -1221,6 +1221,7 @@ mod live {
                 Modalities::seeing(),
             );
             let request = ChatRequest {
+                claude_code: None,
                 model: config.inference.active_model().into(),
                 messages: vec![
                     ChatMessage::system(prompt),
@@ -1299,6 +1300,7 @@ mod live {
             Modalities::seeing(),
         );
         let mut request = ChatRequest {
+            claude_code: None,
             model: config.inference.active_model().into(),
             messages: vec![
                 ChatMessage::system(prompt),

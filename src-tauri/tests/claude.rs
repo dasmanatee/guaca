@@ -105,6 +105,7 @@ fn on_claude() -> InferenceConfig {
 
 fn asking() -> ChatRequest {
     ChatRequest {
+        claude_code: None,
         model: "ignored".into(),
         messages: vec![
             ChatMessage::system("you are Dana"),
@@ -263,6 +264,7 @@ async fn the_real_program_still_answers_in_the_shape_this_build_reads() {
                 ..InferenceConfig::default()
             },
             &ChatRequest {
+                claude_code: None,
                 model: "ignored".into(),
                 messages: vec![
                     ChatMessage::system(

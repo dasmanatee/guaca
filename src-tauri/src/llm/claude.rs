@@ -863,6 +863,7 @@ mod tests {
         let mut pen = |token: Token<'_>| match token {
             Token::Reasoning(text) => seen.push(text.to_string()),
             Token::Text(text) => panic!("the reply must not stream: {text}"),
+            _ => {}
         };
 
         let mut seam = Seam::default();

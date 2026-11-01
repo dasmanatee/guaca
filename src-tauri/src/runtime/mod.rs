@@ -466,6 +466,7 @@ use crate::domain::routine::{EventTrigger, Routine, RunKind};
 use crate::domain::signin::{self, BrowserState, Signin, Surface};
 use crate::domain::worknote;
 use crate::files::FileStore;
+use crate::llm::claude;
 use crate::llm::claude_code;
 use crate::llm::modality::{self, Modalities};
 use crate::llm::openrouter::{ChatMessage, ChatRequest, LlmClient, LlmError, Token, ToolCall};
@@ -1659,6 +1660,18 @@ impl Runtime {
     /// Without this, every misconfiguration presents identically as an agent
     /// that says nothing.
     pub async fn probe(&self, config: &AppConfig) -> Result<String, LlmError> {
+        // A Claude Code turn is a whole session in an agent's folder, and a
+        // request with no agent behind it is refused as a bug. What a test of
+        // this provider can honestly say is whether the program is there, as
+        // the Claude provider's row does.
+        if config.inference.provider == Provider::ClaudeCode {
+            return match claude::presence().await {
+                Some(version) => {
+                    Ok(format!("claude {version} is installed; each agent runs its own session."))
+                }
+                None => Err(LlmError::ProgramMissing { program: claude_code::PROGRAM }),
+            };
+        }
         let request = ChatRequest {
             claude_code: None,
             model: config.inference.active_model().to_string(),

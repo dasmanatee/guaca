@@ -1,10 +1,12 @@
-//! The MCP server a Claude Code session reaches its crew through.
+//! The MCP server a Claude Code session reaches Guaca through.
 //!
-//! A `claude` session keeps its own tools, and the one thing it cannot do with
-//! them is talk to the agents beside it. This is the smallest MCP server that
-//! closes that gap: the streamable-HTTP transport answered with plain JSON,
-//! never a stream, and exactly one tool, `send_message`, sent as the turn that
-//! started the session would have sent it.
+//! A `claude` session keeps its own tools, and what it cannot do with them is
+//! anything with its crew: message a peer, read the directory, make an agent,
+//! keep a schedule, write to the notebook, ask the operator. This is the
+//! smallest MCP server that closes that gap: the streamable-HTTP transport
+//! answered with plain JSON, never a stream, offering exactly the tools the
+//! turn that started the session would have offered a model, and running each
+//! one through the same dispatch every other agent's calls take.
 //!
 //! The URL names the agent and the run, and the token is the bridge's own,
 //! minted when the server starts and refused everywhere else. The workspace's
@@ -12,7 +14,7 @@
 //! the server and nothing that opens the rest of the server is needed here. A
 //! session is told nothing it could use to speak as anybody else: the run is
 //! checked against the agent it belongs to, and a run that has ended has no
-//! relay left to send through.
+//! relay left to call through.
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -23,7 +25,7 @@ use serde_json::{json, Value};
 
 use super::{bearer, same, Serving};
 use crate::domain::ids::{AgentId, RunId};
-use crate::llm::tools;
+use crate::llm::openrouter::ToolSpec;
 
 /// What a client that sends no version of its own is answered with: the
 /// revision that introduced the streamable-HTTP transport this speaks.
@@ -79,42 +81,54 @@ pub(super) async fn call(
             )
         }
         "ping" => result(id, json!({})),
-        "tools/list" => result(id, json!({ "tools": [send_message()] })),
+        "tools/list" => match serving.state.runtime.relay_tools(agent_id, run_id).await {
+            Ok(offered) => result(
+                id,
+                json!({ "tools": offered.into_iter().map(mcp_tool).collect::<Vec<_>>() }),
+            ),
+            // The program lists tools as the session starts, while the turn's
+            // relay is open; a list asked for by anything else is nobody's.
+            Err(err) => error(id, -32602, &err.to_string()),
+        },
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
-            if name != tools::SEND_MESSAGE {
-                return error(
-                    id,
-                    -32602,
-                    &format!(
-                        "there is no tool called {name:?} here; this server offers only {}",
-                        tools::SEND_MESSAGE
-                    ),
-                );
-            }
             let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-            let (text, failed) =
-                match serving.state.runtime.relay_send_message(agent_id, run_id, arguments) {
-                    Ok(rendered) => (rendered, false),
-                    Err(err) => (err.to_string(), true),
-                };
-            result(id, json!({ "content": [{ "type": "text", "text": text }], "isError": failed }))
+            match serving.state.runtime.relay_call(agent_id, run_id, name, arguments).await {
+                Ok(answer) => {
+                    let mut content = vec![json!({ "type": "text", "text": answer.text })];
+                    if let Some(block) = answer.image.as_deref().and_then(image_block) {
+                        content.push(block);
+                    }
+                    result(id, json!({ "content": content, "isError": answer.failed }))
+                }
+                // A tool this server does not have is the protocol's error, as
+                // a client expects; everything a tool itself says, a refusal
+                // included, is a result the model reads.
+                Err(err @ crate::runtime::RelayError::NoSuchTool { .. }) => {
+                    error(id, -32602, &err.to_string())
+                }
+                Err(err) => result(
+                    id,
+                    json!({ "content": [{ "type": "text", "text": err.to_string() }], "isError": true }),
+                ),
+            }
         }
         _ => error(id, -32601, "method not found"),
     }
 }
 
-/// `send_message` as Guaca offers it to every other agent, less `files`.
-///
-/// The relay sends text only. Offered, `files` would be a parameter it can
-/// only refuse, and a model shown it reasonably expects it to work.
-fn send_message() -> Value {
-    let spec = tools::spec(tools::SEND_MESSAGE).expect("send_message is one of Guaca's tools");
-    let mut schema = spec.parameters;
-    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
-        properties.remove("files");
-    }
-    json!({ "name": spec.name, "description": spec.description, "inputSchema": schema })
+/// One of Guaca's tools in the shape the protocol lists it.
+fn mcp_tool(spec: ToolSpec) -> Value {
+    json!({ "name": spec.name, "description": spec.description, "inputSchema": spec.parameters })
+}
+
+/// A picture a tool answered with, as the protocol carries one. The runtime
+/// renders pictures as data URLs; the protocol wants the bytes and the type
+/// apart.
+fn image_block(data_url: &str) -> Option<Value> {
+    let rest = data_url.strip_prefix("data:")?;
+    let (mime, data) = rest.split_once(";base64,")?;
+    Some(json!({ "type": "image", "data": data, "mimeType": mime }))
 }
 
 fn result(id: Value, result: Value) -> Response {

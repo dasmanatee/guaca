@@ -636,22 +636,54 @@ pub enum RelayError {
     NoSuchRun { run_id: RunId },
     #[error("run {run_id} belongs to another agent")]
     WrongAgent { run_id: RunId },
-    #[error("send_message arguments were not understood: {0}")]
-    Arguments(String),
+    #[error("there is no tool called {name:?} here. The tools this server offers are: {offered}")]
+    NoSuchTool { name: String, offered: String },
 }
 
-/// What a Claude Code turn would have handed `send_to_peers` had it dispatched
+/// What the bridge answers one tool call with.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelayAnswer {
+    /// What the tool said, in the words the runtime answers every agent with.
+    pub text: String,
+    /// True when the call was refused or failed, so the session is told so in
+    /// the protocol and not only in the text.
+    pub failed: bool,
+    /// A picture the call produced (a screen, a saved image), as a data URL.
+    pub image: Option<String>,
+}
+
+/// What a Claude Code turn would have handed `dispatch_tool` had it dispatched
 /// the call itself, kept while its session runs so a call arriving over the
-/// bridge is sent as part of that turn.
+/// bridge runs as part of that turn: as this agent, in this run, against the
+/// grants and the crew the turn read when it started.
+///
+/// Behind an async lock because a dispatch awaits (a page load, a parked
+/// permission request) and the turn's own state (`addressed`, `attached`,
+/// `reading`) has to be the one thing every call in the turn writes to. Two
+/// calls from one session run one after the other, which is how the runtime
+/// runs them for every other agent too.
 struct Relay {
-    agent_id: AgentId,
+    card: AgentCard,
     inbound_hop: u16,
     cause: Option<MessageId>,
     settled: bool,
+    modalities: Modalities,
+    /// The crew's connected servers, as the turn read them; see `execute_tool`
+    /// for why these are the crew's and not the agent's.
+    named: Vec<PluginKind>,
+    /// What the bridge lists for this turn: everything this agent would have
+    /// been offered as a model, less what only a loop Guaca runs can use.
+    offered: Vec<crate::llm::openrouter::ToolSpec>,
     /// Peers written to through the bridge, handed back to the turn when its
     /// session ends.
     addressed: HashSet<AgentId>,
+    reading: Reading,
+    /// Files `attach_file` put on the answer this turn has not written yet,
+    /// handed back with `addressed`.
+    attached: Vec<Attachment>,
 }
+
+type SharedRelay = Arc<tokio::sync::Mutex<Relay>>;
 
 /// A relay that is open, and closed when this is dropped.
 ///
@@ -665,14 +697,24 @@ struct Relayed<'a> {
 }
 
 impl Relayed<'_> {
-    fn close(self) -> HashSet<AgentId> {
-        self.runtime.close_relay(self.agent_id, self.run_id).unwrap_or_default()
+    /// Takes the relay off the registry and reads back what the session did
+    /// through it: the peers it wrote to and the files it attached.
+    ///
+    /// Waits for a call still in flight to finish, so a turn that closes its
+    /// relay counts every send a late call made rather than one that lands
+    /// after the turn has counted.
+    async fn close(self) -> (HashSet<AgentId>, Vec<Attachment>) {
+        let Some(shared) = self.runtime.take_relay(self.agent_id, self.run_id) else {
+            return (HashSet::new(), Vec::new());
+        };
+        let mut relay = shared.lock().await;
+        (std::mem::take(&mut relay.addressed), std::mem::take(&mut relay.attached))
     }
 }
 
 impl Drop for Relayed<'_> {
     fn drop(&mut self) {
-        self.runtime.close_relay(self.agent_id, self.run_id);
+        self.runtime.take_relay(self.agent_id, self.run_id);
     }
 }
 
@@ -831,7 +873,7 @@ struct Inner {
     /// by agent, so a call over the bridge can be sent as the turn that made
     /// it. By agent too because a run is a whole cascade: two Claude Code
     /// agents answering each other run their turns under the same one.
-    relays: Mutex<HashMap<RunId, HashMap<AgentId, Relay>>>,
+    relays: Mutex<HashMap<RunId, HashMap<AgentId, SharedRelay>>>,
     /// Agents the operator has open in their own terminal, on the session the
     /// agent's turns resume. Held for as long as that window is, so nothing
     /// here writes the session while somebody else is: two programs appending
@@ -1143,92 +1185,176 @@ impl Runtime {
     }
 
     fn open_relay(&self, run_id: RunId, relay: Relay) -> Relayed<'_> {
-        let agent_id = relay.agent_id;
-        self.inner.relays.lock().entry(run_id).or_default().insert(agent_id, relay);
+        let agent_id = relay.card.id;
+        self.inner
+            .relays
+            .lock()
+            .entry(run_id)
+            .or_default()
+            .insert(agent_id, Arc::new(tokio::sync::Mutex::new(relay)));
         Relayed { runtime: self, agent_id, run_id }
     }
 
-    fn close_relay(&self, agent_id: AgentId, run_id: RunId) -> Option<HashSet<AgentId>> {
+    fn take_relay(&self, agent_id: AgentId, run_id: RunId) -> Option<SharedRelay> {
         let mut relays = self.inner.relays.lock();
         let open = relays.get_mut(&run_id)?;
         let relay = open.remove(&agent_id);
         if open.is_empty() {
             relays.remove(&run_id);
         }
-        relay.map(|relay| relay.addressed)
+        relay
+    }
+
+    /// The relay a bridge call names, or why there is none.
+    fn relay(&self, agent_id: AgentId, run_id: RunId) -> Result<SharedRelay, RelayError> {
+        let relays = self.inner.relays.lock();
+        let open = relays.get(&run_id).ok_or(RelayError::NoSuchRun { run_id })?;
+        open.get(&agent_id).cloned().ok_or(RelayError::WrongAgent { run_id })
+    }
+
+    /// What a Claude Code session is offered over the bridge: the list an agent
+    /// with these grants is offered as a model, less `errand`.
+    ///
+    /// An errand is the agent's model called again inside its turn, and a
+    /// Claude Code session has that already as its own subagents; the prompt
+    /// tells it so. `errands` is switched off here rather than filtered after,
+    /// so the prompt built from the same `Surfaces` agrees with the list.
+    fn offered_over_bridge(
+        surfaces: tools::Surfaces,
+        modalities: Modalities,
+        plugins: &[crate::domain::plugin::PluginToolset],
+    ) -> Vec<crate::llm::openrouter::ToolSpec> {
+        let surfaces = tools::Surfaces { errands: false, ..surfaces };
+        tools::plugin_specs(plugins).into_iter().chain(tools::specs(surfaces, modalities)).collect()
     }
 
     /// A relay as a turn with nothing behind it would open one, for a test
-    /// that cannot hold a real Claude Code session open.
+    /// that cannot hold a real Claude Code session open. Stays open until the
+    /// runtime goes.
     #[doc(hidden)]
     pub fn open_relay_for_tests(&self, agent_id: AgentId, run_id: RunId) {
-        self.inner.relays.lock().entry(run_id).or_default().insert(
-            agent_id,
-            Relay {
-                agent_id,
-                inbound_hop: 0,
-                cause: None,
-                settled: false,
-                addressed: HashSet::new(),
-            },
-        );
+        let card = self
+            .inner
+            .store
+            .get_agent(agent_id)
+            .ok()
+            .flatten()
+            .expect("a relay is opened for an agent that exists");
+        let modalities = Modalities::seeing();
+        let plugins = self.inner.store.plugin_tools(card.group_id, card.id).unwrap_or_default();
+        let named = self.inner.store.group_plugin_kinds(card.group_id).unwrap_or_default();
+        let offered = Self::offered_over_bridge(self.surfaces_for(&card), modalities, &plugins);
+        let relay = Relay {
+            card,
+            inbound_hop: 0,
+            cause: None,
+            settled: false,
+            modalities,
+            named,
+            offered,
+            addressed: HashSet::new(),
+            reading: Reading::default(),
+            attached: Vec::new(),
+        };
+        self.inner
+            .relays
+            .lock()
+            .entry(run_id)
+            .or_default()
+            .insert(agent_id, Arc::new(tokio::sync::Mutex::new(relay)));
     }
 
-    /// Sends what a Claude Code session asked for over the bridge, as the turn
-    /// running under `run_id` would have sent it, and says how it went in the
-    /// words `send_message` answers with everywhere else.
-    ///
-    /// The relay stays locked for the whole send. Nothing in it awaits, and it
-    /// is what makes a turn that closes its relay see every peer a call in
-    /// flight addressed rather than a send that lands after the turn has
-    /// counted. Bridge calls are paced by a model, so the one lock costs
-    /// nothing anybody waits on.
-    pub fn relay_send_message(
+    /// The tools the bridge lists for the turn running under `run_id`.
+    pub async fn relay_tools(
         &self,
         agent_id: AgentId,
         run_id: RunId,
+    ) -> Result<Vec<crate::llm::openrouter::ToolSpec>, RelayError> {
+        let shared = self.relay(agent_id, run_id)?;
+        let relay = shared.lock().await;
+        Ok(relay.offered.clone())
+    }
+
+    /// Runs one of Guaca's tools for a Claude Code session, as the turn running
+    /// under `run_id` would have run it had the call come back from a model,
+    /// and answers in the words the runtime answers every agent with.
+    ///
+    /// The same `dispatch_tool` every other agent's calls go through, so what a
+    /// session may do and what it is told is decided in one place. What is not
+    /// shared is the chip: the session's own `tool_use` frame draws it, so
+    /// nothing here emits `ToolStarted` or `ToolFinished`.
+    pub async fn relay_call(
+        &self,
+        agent_id: AgentId,
+        run_id: RunId,
+        name: &str,
         arguments: serde_json::Value,
-    ) -> Result<String, RelayError> {
-        let mut relays = self.inner.relays.lock();
-        let open = relays.get_mut(&run_id).ok_or(RelayError::NoSuchRun { run_id })?;
-        let relay = open.get_mut(&agent_id).ok_or(RelayError::WrongAgent { run_id })?;
+    ) -> Result<RelayAnswer, RelayError> {
+        let shared = self.relay(agent_id, run_id)?;
+        let mut relay = shared.lock().await;
+        let Relay {
+            card,
+            inbound_hop,
+            cause,
+            settled,
+            modalities,
+            named,
+            offered,
+            addressed,
+            reading,
+            attached,
+        } = &mut *relay;
+
+        if name == tools::ERRAND {
+            return Ok(RelayAnswer {
+                text: "Refused: errands are not offered to a Claude Code session, because you \
+                       have the same thing as your own subagents. Use your Task tool to hand a \
+                       piece of this to a subagent; nothing was sent and nothing was spent."
+                    .to_string(),
+                failed: true,
+                image: None,
+            });
+        }
+        if !offered.iter().any(|spec| spec.name == name) {
+            return Err(RelayError::NoSuchTool {
+                name: name.to_string(),
+                offered: offered
+                    .iter()
+                    .map(|spec| spec.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            });
+        }
 
         let call = ToolCall {
             id: String::new(),
-            name: tools::SEND_MESSAGE.to_string(),
+            name: name.to_string(),
             arguments: arguments.to_string(),
         };
-        let invocation =
-            tools::parse(&call, &[]).map_err(|err| RelayError::Arguments(err.to_string()))?;
-        let ToolInvocation::SendMessage { to, text, intent, files } = invocation else {
-            return Err(RelayError::Arguments("they did not describe a message".to_string()));
-        };
-        // The bridge does not offer `files`, and a model that sends them anyway
-        // must not be told the message went with them.
-        if !files.is_empty() {
-            return Err(RelayError::Arguments(
-                "files cannot be attached through this tool. Put what the recipient needs in \
-                 the text, and send again without `files`."
-                    .to_string(),
-            ));
-        }
-        let Some(card) = self.inner.store.get_agent(agent_id).ok().flatten() else {
-            return Err(RelayError::NoSuchRun { run_id });
-        };
-
-        let deliveries = self.send_to_peers(
-            &card,
-            run_id,
-            relay.inbound_hop,
-            relay.cause,
-            relay.settled,
-            &mut relay.addressed,
-            &to,
-            &text,
-            intent,
-            &[],
+        let (text, part, image) = self
+            .dispatch_tool(
+                card,
+                run_id,
+                *inbound_hop,
+                *cause,
+                *settled,
+                addressed,
+                reading,
+                attached,
+                &call,
+                arguments,
+                *modalities,
+                named,
+            )
+            .await;
+        let failed = matches!(
+            &part,
+            Part::ToolCall {
+                outcome: ToolOutcome::Failed { .. } | ToolOutcome::Refused { .. },
+                ..
+            }
         );
-        Ok(tools::render_deliveries(&deliveries))
+        Ok(RelayAnswer { text, failed, image })
     }
 
     pub(crate) fn hold_workspace_lease(&self, lease: std::fs::File) {
@@ -3324,7 +3450,7 @@ impl Runtime {
         // two disagreeing is the failure this replaced, where every agent was
         // told it had a machine whether or not a provider was configured and
         // whether or not the operator had given it one.
-        let surfaces = self.surfaces_for(&card);
+        let mut surfaces = self.surfaces_for(&card);
         // Read from the messages every turn rather than kept anywhere. A
         // coordinator was holding this by hand in its own memory, which drifted
         // three assignments stale and reported work as outstanding that had
@@ -3363,9 +3489,17 @@ impl Runtime {
         // asked for anyway. Costs one request per endpoint per six hours, and
         // an endpoint that says nothing leaves everything as it was.
         let modalities = self.inner.modalities.of(&inference, &model).await;
-        // A Claude Code session runs its own tools and is offered none of
-        // Guaca's, so its prompt describes none of them either.
-        let offers_tools = inference.provider != Provider::ClaudeCode;
+        // A Claude Code session reaches Guaca's tools over the bridge, and only
+        // a served workspace runs one. Without it the session has its own tools
+        // and none of Guaca's, so its prompt describes none of them either.
+        let bridge =
+            (inference.provider == Provider::ClaudeCode).then(|| self.mcp_bridge()).flatten();
+        let offers_tools = inference.provider != Provider::ClaudeCode || bridge.is_some();
+        if inference.provider == Provider::ClaudeCode {
+            // The session's own subagents are its errands. Decided here so the
+            // prompt and the bridge's list, both read from `surfaces`, agree.
+            surfaces.errands = false;
+        }
 
         #[allow(unused_mut)]
         let mut messages = prompt::build_messages(
@@ -3479,12 +3613,14 @@ impl Runtime {
         // Built once: nothing it is made from changes inside a turn, and an
         // errand is offered this same list less what it is never given.
         //
-        // Empty for a Claude Code session, which keeps its own tools and reaches
-        // Guaca's through the bridge: it runs them itself and never hands the
-        // runtime a call to dispatch.
+        // For a Claude Code session this is what the bridge lists rather than
+        // what the request carries: the session runs its own loop, calls these
+        // over the bridge, and never hands the runtime a call to dispatch. The
+        // same list either way, so a Claude Code agent can do everything with
+        // its crew that any other agent can.
         let offered: Vec<crate::llm::openrouter::ToolSpec> =
             if inference.provider == Provider::ClaudeCode {
-                Vec::new()
+                Self::offered_over_bridge(surfaces, modalities, &plugins)
             } else {
                 tools::plugin_specs(&plugins)
                     .into_iter()
@@ -3492,29 +3628,25 @@ impl Runtime {
                     .collect()
             };
 
-        // The prompt goes on the command line once, when the session is new; a
-        // resumed session already has it, and the batch alone is what it has
-        // not read.
+        // The prompt goes to the program on every turn, resumed or not. It is
+        // built per process and never stored with the session, so a resumed
+        // turn that did not carry it would run on the roster, skills and
+        // artifacts of whichever turn did. The batch alone is what the session
+        // has not read.
         let mut session = (inference.provider == Provider::ClaudeCode).then(|| {
             let system = match messages.first() {
                 Some(ChatMessage::System { content }) => content.as_str(),
                 _ => "",
             };
-            let bridge = self.mcp_bridge();
             claude_code::Session {
                 agent_id,
                 cwd: self.desk_for(&card),
                 resume: card.claude_session.clone(),
-                // The bridge is how a session reaches its crew, and only a
-                // served workspace runs one.
-                system_prompt: card.claude_session.is_none().then(|| match &bridge {
-                    Some(_) => format!(
-                        "{system}\n\nTo reach a crewmate, call the send_message tool your guaca \
-                         MCP server provides."
-                    ),
+                system_prompt: Some(match &bridge {
+                    Some(_) => format!("{system}{}", claude_code::OWN_TOOLS_NOTE),
                     None => system.to_string(),
                 }),
-                bridge: bridge.map(|bridge| claude_code::Bridge {
+                bridge: bridge.clone().map(|bridge| claude_code::Bridge {
                     url: format!("{}/v1/claude-code/mcp/{agent_id}/{run_id}", bridge.url),
                     token: bridge.token,
                 }),
@@ -3594,14 +3726,27 @@ impl Runtime {
             let relay = session.is_some().then(|| {
                 self.open_relay(
                     run_id,
-                    Relay { agent_id, inbound_hop, cause, settled, addressed: HashSet::new() },
+                    Relay {
+                        card: card.clone(),
+                        inbound_hop,
+                        cause,
+                        settled,
+                        modalities,
+                        named: named.clone(),
+                        offered: offered.clone(),
+                        addressed: std::mem::take(&mut addressed),
+                        reading: std::mem::take(&mut reading),
+                        attached: std::mem::take(&mut attached),
+                    },
                 )
             });
             let completion = self
                 .stream_with_retries(&inference, &request, run_id, agent_id, Some(&mut stream))
                 .await;
             if let Some(relay) = relay {
-                addressed.extend(relay.close());
+                let (sent, files) = relay.close().await;
+                addressed.extend(sent);
+                attached.extend(files);
             }
 
             let completion = match completion {
@@ -3630,11 +3775,8 @@ impl Runtime {
                 if keep != session.resume {
                     self.keep_claude_session(&card, keep.as_deref());
                 }
-                // A round the promise check sends back is the same session,
-                // not a second one named and prompted all over again.
-                if keep.is_some() {
-                    session.system_prompt = None;
-                }
+                // A round the promise check sends back is the same session
+                // resumed, not a second one.
                 session.resume = keep;
             }
 

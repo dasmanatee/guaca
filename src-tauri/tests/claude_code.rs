@@ -59,6 +59,12 @@ fn write_stand_in(dir: &Path) {
          here='{here}'\n\
          pwd -P > \"$here/cwd\"\n\
          printf '%s\\n' \"$@\" > \"$here/argv\"\n\
+         rm -f \"$here/prompt\"\n\
+         prev=''\n\
+         for a in \"$@\"; do\n\
+           if [ \"$prev\" = '--append-system-prompt-file' ]; then cat \"$a\" > \"$here/prompt\"; fi\n\
+           prev=\"$a\"\n\
+         done\n\
          input=$(cat)\n\
          printf '%s\\n' \"$input\" > \"$here/stdin\"\n\
          case \" $* \" in\n\
@@ -224,7 +230,8 @@ async fn a_turn_set_to_claude_code_is_answered_by_the_program() {
 
     let argv = recorded(&beside, "argv");
     assert!(argv.lines().any(|a| a == "--session-id"), "{argv}");
-    assert!(argv.lines().any(|a| a == "--append-system-prompt"), "{argv}");
+    assert!(argv.lines().any(|a| a == "--append-system-prompt-file"), "{argv}");
+    assert_eq!(recorded(&beside, "prompt"), "you are Dana");
     assert!(recorded(&beside, "stdin").contains(MARKER));
 
     let started_in = recorded(&beside, "cwd");
@@ -232,7 +239,7 @@ async fn a_turn_set_to_claude_code_is_answered_by_the_program() {
 }
 
 #[tokio::test]
-async fn a_second_turn_resumes_and_sends_no_system_prompt() {
+async fn a_second_turn_resumes_and_still_carries_the_prompt() {
     let _records = RECORDS.lock().await;
     let beside = stand_in();
     let cwd = tempfile::tempdir().unwrap();
@@ -241,7 +248,7 @@ async fn a_second_turn_resumes_and_sends_no_system_prompt() {
         .unwrap()
         .stream_chat(
             &on_claude_code(),
-            &asking(cwd.path(), Some("fixed-session"), None, MARKER),
+            &asking(cwd.path(), Some("fixed-session"), Some("you are Dana"), MARKER),
             |_| {},
         )
         .await
@@ -250,7 +257,11 @@ async fn a_second_turn_resumes_and_sends_no_system_prompt() {
     let argv = recorded(&beside, "argv");
     let args: Vec<&str> = argv.lines().collect();
     assert!(args.windows(2).any(|w| w == ["--resume", "fixed-session"]), "{argv}");
+    // As a file, never on the command line, and on the resumed turn too: the
+    // program builds its prompt per process.
     assert!(!args.contains(&"--append-system-prompt"), "{argv}");
+    assert!(args.contains(&"--append-system-prompt-file"), "{argv}");
+    assert_eq!(recorded(&beside, "prompt"), "you are Dana");
     assert!(!args.contains(&"--session-id"), "{argv}");
     // Asked for on the request and still not passed: the session chooses.
     assert!(!args.contains(&"--model"), "{argv}");
@@ -401,10 +412,17 @@ async fn a_first_turn_stores_the_session_and_a_second_resumes_it() {
     let first = recorded(&beside, "argv");
     assert!(first.lines().any(|a| a == "--mcp-config"), "{first}");
     assert!(first.lines().any(|a| a == "--session-id"), "{first}");
-    assert!(first.lines().any(|a| a == "--append-system-prompt"), "{first}");
-    // The prompt the runtime built for this agent, and how to reach its crew.
-    assert!(first.contains("You are Dana."), "{first}");
-    assert!(first.contains("call the send_message tool your guaca MCP server provides"), "{first}");
+    assert!(first.lines().any(|a| a == "--append-system-prompt-file"), "{first}");
+    // The prompt the runtime built for this agent: Guaca's whole prompt, tools
+    // and all, and how the program names them.
+    let prompt = recorded(&beside, "prompt");
+    assert!(prompt.contains("You are Dana."), "{prompt}");
+    assert!(prompt.contains("`send_message` is `mcp__guaca__send_message`"), "{prompt}");
+    for tool in ["directory", "create_agent", "update_memory", "note_progress", "schedule"] {
+        assert!(prompt.contains(&format!("`{tool}`")), "{tool} missing from the prompt: {prompt}");
+    }
+    // Not errands, which the session has as its own subagents.
+    assert!(!prompt.contains("`errand`"), "{prompt}");
     assert!(recorded(&beside, "stdin").contains(MARKER));
     // The session's own work is on the turn's record, where the operator
     // reads what an agent did.
@@ -423,7 +441,8 @@ async fn a_first_turn_stores_the_session_and_a_second_resumes_it() {
     let second = recorded(&beside, "argv");
     let args: Vec<&str> = second.lines().collect();
     assert!(args.windows(2).any(|w| w == ["--resume", "fixed-session"]), "{second}");
-    assert!(!args.contains(&"--append-system-prompt"), "the session already has it: {second}");
+    assert!(args.contains(&"--append-system-prompt-file"), "the prompt is per turn: {second}");
+    assert!(recorded(&beside, "prompt").contains("You are Dana."));
     assert!(recorded(&beside, "stdin").contains("and again"));
     assert!(!recorded(&beside, "stdin").contains(MARKER), "the session already read that turn");
 }
@@ -468,10 +487,11 @@ async fn a_clear_forgets_the_session_without_running_the_program() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_claude_code_turn_is_offered_no_tools() {
+async fn a_claude_code_turn_without_a_bridge_is_told_about_no_tools() {
     // Guaca's tools are the session's to reach through the bridge, not a list
-    // the runtime hands it: offering them would also restrict the session's
-    // own.
+    // the runtime hands it: offering them on the command line would also
+    // restrict the session's own. With no bridge up there is no way to them,
+    // so the prompt describes none.
     let _records = RECORDS.lock().await;
     let beside = stand_in();
     let crew = crew();
@@ -483,12 +503,11 @@ async fn a_claude_code_turn_is_offered_no_tools() {
     for restriction in ["--tools", "--allowedTools", "--disallowedTools"] {
         assert!(!argv.lines().any(|a| a == restriction), "{restriction} in {argv}");
     }
-    // Nor told about any. With no bridge up, not even the one it would reach
-    // its crew through.
+    let prompt = recorded(&beside, "prompt");
     for tool in ["update_memory", "note_progress", "request_permission", "create_agent"] {
-        assert!(!argv.contains(tool), "{tool} in the prompt: {argv}");
+        assert!(!prompt.contains(&format!("`{tool}`")), "{tool} in the prompt: {prompt}");
     }
-    assert!(!argv.contains("your guaca MCP server"), "{argv}");
+    assert!(!prompt.contains("mcp__guaca__"), "{prompt}");
     assert!(!argv.lines().any(|a| a == "--mcp-config"), "{argv}");
     assert_eq!(crew.session().as_deref(), Some("fixed-session"), "{:?}", crew.channel());
 }

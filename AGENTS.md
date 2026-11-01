@@ -156,8 +156,9 @@ src-tauri/src/
   boot.rs             Opening a workspace, which is the same act in both hosts.
   server/mod.rs       The second host: the same runtime over HTTP and a
                       socket, behind one token.
-  server/bridge.rs    The one-tool MCP endpoint through which a Claude Code
-                      session sends a message to the crew.
+  server/bridge.rs    The MCP endpoint through which a Claude Code session
+                      reaches Guaca's tools: everything its turn would have
+                      offered a model, run through the same dispatch.
   bin/guacad.rs       The daemon that starts it, configured from the
                       environment because systemd starts it, not a person.
   host.rs             A guacad container, and the one sequence that backs it

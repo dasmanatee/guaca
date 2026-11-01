@@ -349,7 +349,13 @@ export function AgentEditor({ agent, onClose }: Props) {
 
         {agent && <GrantList agent={agent} />}
 
-        {agent && <ErrandSwitch agent={agent} />}
+        {agent && provider !== "claudeCode" && <ErrandSwitch agent={agent} />}
+        {agent && provider === "claudeCode" && (
+          <p className="field__hint">
+            Errands are not offered to a Claude Code agent: its session has its own subagents for
+            that. Everything else Guaca's agents can do with each other, it can do too.
+          </p>
+        )}
 
         <label className="field">
           <span className="field__label">Instructions</span>

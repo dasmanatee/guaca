@@ -625,17 +625,31 @@ answer come back. The reads, edits and commands in between arrive as tool-call
 parts so the trail can draw them, already done. Guaca does not approve, refuse
 or cap them, and the guard has nothing to say about a loop it does not run.
 
-**`send_message` reaches the session through an MCP bridge and nothing else
-does.** The daemon serves one tool at `/v1/claude-code/mcp/{agent}/{run}`, and
-the session is told about it per turn. The path carries the agent and the run
-so a message is stamped as that agent's, in that turn, without trusting the
-session to say who it is. No other Guaca tool is offered, because each of them
-assumes a loop Guaca runs. The bridge has a token of its own, minted when the
-daemon starts and refused everywhere else, and the workspace token is refused on
-the bridge; it reaches the session in a private file named on the command line,
-never on the command line itself, and the file is removed when the turn ends. On
-the same machine, a process that can read `/proc` can learn a peer's run id while
-that peer's turn runs and speak through its relay; that is inside the spec's
+**Guaca's tools reach the session through an MCP bridge, and the bridge runs
+them through the same dispatch as everybody else's.** The daemon serves
+`/v1/claude-code/mcp/{agent}/{run}`, and the session is told about it per turn.
+`tools/list` answers with exactly what the turn would have offered a model:
+`directory`, `send_message`, `create_agent`, `schedule`, `calendar`, `artifact`,
+`notebook`, `skill`, `settings`, the operator tools, memory and notes, files and
+documents, the crew's plugins, and the machine and browser tools where the agent
+was given those places. `tools/call` goes through `dispatch_tool`, so grants,
+refusals, trust labels, parked permission requests and the words the model reads
+are the ones every other agent gets. The one tool withheld is `errand`: a
+session has that as its own subagents, and the prompt says so. The path carries
+the agent and the run so a call is stamped as that agent's, in that turn, without
+trusting the session to say who it is; a relay holds the turn's state (peers
+addressed, files attached, pages read) while the session runs and hands it back
+when it ends. The session's own `tool_use` frame draws the chip, with the
+program's `mcp__guaca__` prefix taken off, so the bridge emits no events of its
+own. The bridge has a token of its own, minted when the daemon starts and
+refused everywhere else, and the workspace token is refused on the bridge; it
+reaches the session in a private file named on the command line, never on the
+command line itself, and the file is removed when the turn ends. The system
+prompt travels the same way, and on every turn: the program builds it per
+process and keeps none of it with the session, so a resumed turn carries the
+current roster, skills and artifacts rather than the first turn's. On the same
+machine, a process that can read `/proc` can learn a peer's run id while that
+peer's turn runs and speak through its relay; that is inside the spec's
 no-sandbox non-goal.
 
 **`/clear` is the only command Guaca interprets.** A turn whose whole batch is

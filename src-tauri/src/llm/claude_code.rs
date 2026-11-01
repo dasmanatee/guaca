@@ -23,7 +23,6 @@ use crate::domain::ids::AgentId;
 use crate::llm::openrouter::{
     ChatMessage, ChatRequest, Completion, LlmError, Token, Usage, UserContent, THOUGHT_BREAK,
 };
-use crate::llm::tools::SEND_MESSAGE;
 
 /// What one Claude Code turn needs to know about who it is speaking for.
 ///
@@ -74,8 +73,34 @@ pub const CLEARED: &str = "Session cleared. The next message starts a fresh Clau
 /// is also what the program prefixes its tools with.
 pub const MCP_SERVER: &str = "guaca";
 
-/// The bridge's one tool as the program names it.
-pub const MCP_SEND: &str = "mcp__guaca__send_message";
+/// What the program puts in front of every tool the bridge offers: so
+/// `send_message` is `mcp__guaca__send_message` to the session, and is drawn
+/// as `send_message` again here.
+pub const MCP_PREFIX: &str = "mcp__guaca__";
+
+/// How long a bridge call may take before the program gives up on it, in
+/// milliseconds, as the program reads `MCP_TOOL_TIMEOUT`.
+///
+/// Longer than the runtime's approval window: `request_permission` and
+/// `ask_operator` park the call until the operator answers or ten minutes
+/// pass, and a session that stopped waiting first would be told the tool
+/// failed while the request was still on the operator's desk. Set only when
+/// the operator's environment does not set one.
+pub const MCP_TOOL_TIMEOUT_MS: u64 = 11 * 60 * 1000;
+
+/// What a session with the bridge is told after Guaca's prompt, which was
+/// written for a model whose only tools are Guaca's.
+pub const OWN_TOOLS_NOTE: &str = "\n\n## Your own tools and Guaca's\n\
+You are a Claude Code session. Your own tools (Bash, Read, Edit, Write, Glob, Grep, Task, \
+WebFetch and the rest) are yours to use as in a terminal, in the folder you were started in. \
+Guaca's tools described above are the ones your `guaca` MCP server provides; the program lists \
+them with an `mcp__guaca__` prefix, so `send_message` is `mcp__guaca__send_message`, \
+`create_agent` is `mcp__guaca__create_agent`, and so on. Everything a crewmate can do with the \
+crew, you can do through them.\n\
+Where these instructions mention errands, use your own subagents (the Task tool) instead: \
+errands are not offered to you. `run_command`, `open_on_desktop` and `use_screen`, where you \
+have them, reach a separate computer Guaca gives an agent, not the machine you are running on: \
+for files and commands here, use your own tools.";
 
 /// How long the program may go without writing a line before it is stopped.
 ///
@@ -113,17 +138,22 @@ const OPERATOR: &str = "[OPERATOR]";
 ///   rather than something read back out of a stream that may never finish,
 ///   and **`--resume`** on every turn after, which is where the session's
 ///   memory lives.
-/// - **`--append-system-prompt`** only on the first turn. A resumed session
-///   already has it, and appending it again would stack a copy per turn.
+/// - **`--append-system-prompt-file`** on every turn, resumed or not. The
+///   program builds its system prompt per process and keeps none of it with
+///   the session, so a prompt sent once would leave every later turn on the
+///   roster and the skills of the first; sent each time, it does not stack. A
+///   file rather than the text because a prompt carries a crew's roster, memory
+///   and artifacts and can outgrow a command-line argument.
 /// - **`--mcp-config`** when the bridge is up, so the session can reach its
-///   crewmates. Merged with the operator's own servers rather than replacing
-///   them, because those are part of what the operator chose this for. The
-///   path to an [`McpConfig`] and never the JSON itself, which carries a token.
+///   crewmates and the rest of Guaca's tools. Merged with the operator's own
+///   servers rather than replacing them, because those are part of what the
+///   operator chose this for. The path to a [`Private`] file and never the
+///   JSON itself, which carries a token.
 ///
 /// No `--model`. The session picks its model exactly as it does in a terminal,
 /// from the operator's settings or a `/model` sent in the channel, and a flag
 /// here would override both on every turn.
-pub fn argv(session: &Session, mcp_config: Option<&Path>) -> Vec<String> {
+pub fn argv(session: &Session, mcp_config: Option<&Path>, prompt: Option<&Path>) -> Vec<String> {
     let mut args: Vec<String> = [
         "-p",
         "--input-format",
@@ -142,8 +172,8 @@ pub fn argv(session: &Session, mcp_config: Option<&Path>) -> Vec<String> {
         None => args.extend(["--session-id".to_string(), uuid::Uuid::new_v4().to_string()]),
     }
 
-    if let Some(prompt) = &session.system_prompt {
-        args.extend(["--append-system-prompt".to_string(), prompt.clone()]);
+    if let Some(prompt) = prompt {
+        args.extend(["--append-system-prompt-file".to_string(), prompt.display().to_string()]);
     }
 
     if let Some(config) = mcp_config {
@@ -153,19 +183,39 @@ pub fn argv(session: &Session, mcp_config: Option<&Path>) -> Vec<String> {
     args
 }
 
-/// The session's MCP config, on disk for exactly one turn.
+/// A file of this turn's, on disk for exactly one turn: the session's MCP
+/// config, and its system prompt.
 ///
 /// A file because a command line is not private: any process of this user can
 /// read it under `/proc` for as long as the turn runs, and the config carries
-/// the bridge's token. Only this user can read the file, and it is removed when
-/// the guard is dropped, which is when the turn ends however it ends, a stop
-/// included.
-pub struct McpConfig {
+/// the bridge's token while the prompt carries the crew's memory. Only this
+/// user can read the file, and it is removed when the guard is dropped, which
+/// is when the turn ends however it ends, a stop included.
+pub struct Private {
     path: PathBuf,
 }
 
-impl McpConfig {
-    pub fn write(bridge: &Bridge) -> std::io::Result<Self> {
+impl Private {
+    /// The session's MCP config.
+    pub fn mcp_config(bridge: &Bridge) -> std::io::Result<Self> {
+        let config = serde_json::json!({
+            "mcpServers": {
+                MCP_SERVER: {
+                    "type": "http",
+                    "url": bridge.url,
+                    "headers": { "Authorization": format!("Bearer {}", bridge.token) },
+                },
+            },
+        });
+        Self::write("json", &config.to_string())
+    }
+
+    /// The session's system prompt.
+    pub fn prompt(text: &str) -> std::io::Result<Self> {
+        Self::write("md", text)
+    }
+
+    fn write(ext: &str, contents: &str) -> std::io::Result<Self> {
         use std::io::Write;
 
         let dir = std::env::temp_dir().join("guaca-claude-code");
@@ -178,15 +228,6 @@ impl McpConfig {
         }
         folder.create(&dir)?;
 
-        let config = serde_json::json!({
-            "mcpServers": {
-                MCP_SERVER: {
-                    "type": "http",
-                    "url": bridge.url,
-                    "headers": { "Authorization": format!("Bearer {}", bridge.token) },
-                },
-            },
-        });
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -194,11 +235,11 @@ impl McpConfig {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let path = dir.join(format!("{}.json", uuid::Uuid::new_v4()));
+        let path = dir.join(format!("{}.{ext}", uuid::Uuid::new_v4()));
         let mut file = options.open(&path)?;
         // Held before the write, so a write that fails still removes the file.
         let guard = Self { path };
-        file.write_all(config.to_string().as_bytes())?;
+        file.write_all(contents.as_bytes())?;
         Ok(guard)
     }
 
@@ -207,7 +248,7 @@ impl McpConfig {
     }
 }
 
-impl Drop for McpConfig {
+impl Drop for Private {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
@@ -403,7 +444,8 @@ pub fn fold<F: FnMut(Token<'_>)>(
                         let Some(id) = str_at(block, "id") else { continue };
                         let name = str_at(block, "name").unwrap_or_default();
                         // Drawn as this app's own tool, which is what it is.
-                        let name = if name == MCP_SEND { SEND_MESSAGE.to_string() } else { name };
+                        let name =
+                            name.strip_prefix(MCP_PREFIX).map_or(name.clone(), str::to_string);
                         let input = block.get("input").cloned().unwrap_or_default();
                         let (name, input) = state.open.entry(id.clone()).or_insert((name, input));
                         on_token(Token::ToolStarted { call_id: &id, name, arguments: input });
@@ -561,26 +603,37 @@ pub async fn stream<F: FnMut(Token<'_>)>(
         });
     }
 
+    let unwritable = |what: &str, err: std::io::Error| LlmError::ProgramFailed {
+        program: PROGRAM,
+        message: format!(
+            "could not write the session's {what} under {}: {err}. Check that the temporary \
+             folder is writable and has space.",
+            std::env::temp_dir().display()
+        ),
+    };
     let mcp_config = match &session.bridge {
-        Some(bridge) => Some(McpConfig::write(bridge).map_err(|err| LlmError::ProgramFailed {
-            program: PROGRAM,
-            message: format!(
-                "could not write the session's MCP config under {}: {err}. Check that the \
-                 temporary folder is writable and has space.",
-                std::env::temp_dir().display()
-            ),
-        })?),
+        Some(bridge) => {
+            Some(Private::mcp_config(bridge).map_err(|err| unwritable("MCP config", err))?)
+        }
         None => None,
     };
-    let args = argv(session, mcp_config.as_ref().map(McpConfig::path));
+    let prompt = match &session.system_prompt {
+        Some(text) => Some(Private::prompt(text).map_err(|err| unwritable("prompt", err))?),
+        None => None,
+    };
+    let args =
+        argv(session, mcp_config.as_ref().map(Private::path), prompt.as_ref().map(Private::path));
     // The id a first turn named, which is the session to keep if the result
     // frame never says otherwise.
     let named =
         args.iter().position(|arg| arg == "--session-id").and_then(|at| args.get(at + 1)).cloned();
 
-    let mut child = tokio::process::Command::new(PROGRAM)
-        .args(&args)
-        .current_dir(&session.cwd)
+    let mut command = tokio::process::Command::new(PROGRAM);
+    command.args(&args).current_dir(&session.cwd);
+    if std::env::var_os("MCP_TOOL_TIMEOUT").is_none() {
+        command.env("MCP_TOOL_TIMEOUT", MCP_TOOL_TIMEOUT_MS.to_string());
+    }
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -788,7 +841,7 @@ mod tests {
 
     #[test]
     fn argv_resumes_a_stored_session_and_never_isolates() {
-        let args = argv(&Session { resume: Some("abc".into()), ..session() }, None);
+        let args = argv(&Session { resume: Some("abc".into()), ..session() }, None, None);
 
         assert_eq!(value_after(&args, "--resume"), Some("abc"));
         assert!(args.iter().any(|a| a == "--dangerously-skip-permissions"), "{args:?}");
@@ -808,21 +861,33 @@ mod tests {
     }
 
     #[test]
-    fn argv_starts_a_new_session_with_the_system_prompt_once() {
-        let args = argv(&Session { system_prompt: Some("you are Dana".into()), ..session() }, None);
+    fn argv_starts_a_new_session_and_sends_the_prompt_as_a_private_file() {
+        let prompt = Private::prompt("you are Dana").unwrap();
+        let args = argv(&session(), None, Some(prompt.path()));
 
         let id = value_after(&args, "--session-id").expect("a new session is named up front");
         assert!(uuid::Uuid::parse_str(id).is_ok(), "{id}");
-        assert_eq!(value_after(&args, "--append-system-prompt"), Some("you are Dana"));
+        let at = PathBuf::from(value_after(&args, "--append-system-prompt-file").unwrap());
+        assert_eq!(std::fs::read_to_string(&at).unwrap(), "you are Dana");
+        assert!(!args.iter().any(|a| a == "--append-system-prompt"), "{args:?}");
         assert!(!args.iter().any(|a| a == "--resume"), "{args:?}");
         assert!(!args.iter().any(|a| a == "--mcp-config"), "{args:?}");
+
+        // And again on a resumed turn: the prompt is the program's per
+        // process, so each turn carries the current one.
+        let args =
+            argv(&Session { resume: Some("abc".into()), ..session() }, None, Some(prompt.path()));
+        assert_eq!(value_after(&args, "--append-system-prompt-file"), Some(at.to_str().unwrap()));
+
+        drop(prompt);
+        assert!(!at.exists(), "the file outlived the turn");
     }
 
     #[test]
     fn argv_names_the_bridge_by_a_private_file_that_goes_with_the_turn() {
         let bridge = Bridge { url: "http://127.0.0.1:8788/v1/x".into(), token: "t0k".into() };
-        let file = McpConfig::write(&bridge).unwrap();
-        let args = argv(&Session { bridge: Some(bridge), ..session() }, Some(file.path()));
+        let file = Private::mcp_config(&bridge).unwrap();
+        let args = argv(&Session { bridge: Some(bridge), ..session() }, Some(file.path()), None);
 
         assert!(!args.iter().any(|a| a.contains("t0k")), "the token is on the command line");
         let at = PathBuf::from(value_after(&args, "--mcp-config").unwrap());
@@ -927,13 +992,15 @@ mod tests {
     }
 
     #[test]
-    fn the_bridge_send_draws_as_send_message() {
-        let tool_use = TOOL_USE.replace("\"Bash\"", &format!("\"{MCP_SEND}\""));
-        let (state, seen) = fold_all(&[&tool_use, TOOL_RESULT]);
+    fn a_bridge_tool_draws_as_guacas_own() {
+        for tool in ["send_message", "create_agent", "schedule"] {
+            let tool_use = TOOL_USE.replace("\"Bash\"", &format!("\"{MCP_PREFIX}{tool}\""));
+            let (state, seen) = fold_all(&[&tool_use, TOOL_RESULT]);
 
-        let Part::ToolCall { name, .. } = &state.work[0] else { panic!("{:?}", state.work[0]) };
-        assert_eq!(name, "send_message");
-        assert_eq!(seen[0], "started:toolu_x:send_message");
+            let Part::ToolCall { name, .. } = &state.work[0] else { panic!("{:?}", state.work[0]) };
+            assert_eq!(name, tool);
+            assert_eq!(seen[0], format!("started:toolu_x:{tool}"));
+        }
     }
 
     #[test]

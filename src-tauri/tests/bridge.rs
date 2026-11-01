@@ -13,6 +13,7 @@
 
 use std::net::SocketAddr;
 
+use guac_lib::domain::approval::Decision;
 use guac_lib::domain::envelope::Participant;
 use guac_lib::domain::ids::{AgentId, RunId};
 use serde_json::{json, Value};
@@ -151,19 +152,128 @@ async fn a_call_for_a_run_that_is_not_live_is_refused_in_the_result() {
     assert!(said.contains("no Claude Code turn is running"), "{said}");
 }
 
-#[tokio::test]
-async fn tools_list_offers_exactly_send_message() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tools_list_offers_the_turn_everything_a_crewmate_gets() {
     let (addr, runtime, _dir) = workspace().await;
+    let dana = agent(addr, "Dana").await;
+    let run = RunId::new();
+    runtime.open_relay_for_tests(dana, run);
+
+    let body = rpc(&runtime, &route(addr, dana, run), "tools/list", json!({})).await;
+    let tools = body["result"]["tools"].as_array().expect("a list of tools");
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    // What any agent with no computer and no browser is offered.
+    for tool in [
+        "directory",
+        "send_message",
+        "create_agent",
+        "schedule",
+        "calendar",
+        "artifact",
+        "notebook",
+        "skill",
+        "settings",
+        "decision",
+        "ask_operator",
+        "escalate",
+        "update_memory",
+        "note_progress",
+        "attach_file",
+        "read_file",
+        "write_document",
+    ] {
+        assert!(names.contains(&tool), "{tool} missing from {names:?}");
+    }
+    // Not what needs a place this agent was not given, and never errands: a
+    // session has its own subagents.
+    for tool in ["run_command", "browse", "use_screen", "request_permission", "errand"] {
+        assert!(!names.contains(&tool), "{tool} offered in {names:?}");
+    }
+    let send = tools.iter().find(|t| t["name"] == "send_message").unwrap();
+    assert!(send["description"].as_str().unwrap().contains("Send a message"));
+    assert_eq!(send["inputSchema"]["type"], "object");
+    assert_eq!(send["inputSchema"]["required"], json!(["to", "text", "intent"]));
+
+    // Nobody's turn lists nothing: the protocol's error, which a client reads
+    // as a server that is not for it.
     let body =
         rpc(&runtime, &route(addr, AgentId::new(), RunId::new()), "tools/list", json!({})).await;
+    assert_eq!(body["error"]["code"], -32602, "{body}");
+}
 
-    let tools = body["result"]["tools"].as_array().expect("a list of tools");
-    assert_eq!(tools.len(), 1, "{body}");
-    assert_eq!(tools[0]["name"], "send_message");
-    assert!(tools[0]["description"].as_str().unwrap().contains("Send a message"));
-    let schema = &tools[0]["inputSchema"];
-    assert_eq!(schema["type"], "object");
-    assert_eq!(schema["required"], json!(["to", "text", "intent"]));
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_can_read_the_directory_and_make_an_agent() {
+    // The two things the first live crew could not do: see who else there was,
+    // and add somebody.
+    let (addr, runtime, _dir) = workspace().await;
+    let dana = agent(addr, "Dana").await;
+    let _pat = agent(addr, "Pat").await;
+    let run = RunId::new();
+    runtime.open_relay_for_tests(dana, run);
+
+    let body = rpc(
+        &runtime,
+        &route(addr, dana, run),
+        "tools/call",
+        json!({ "name": "directory", "arguments": {} }),
+    )
+    .await;
+    assert_eq!(body["result"]["isError"], false, "{body}");
+    let said = body["result"]["content"][0]["text"].as_str().unwrap_or_default();
+    assert!(said.contains("Pat"), "{said}");
+
+    // Making an agent asks the operator first, exactly as it does for any
+    // other agent: the call parks until they answer, and the session waits.
+    let asked = tokio::spawn({
+        let runtime = runtime.clone();
+        let url = route(addr, dana, run);
+        async move {
+            rpc(
+                &runtime,
+                &url,
+                "tools/call",
+                json!({ "name": "create_agent", "arguments": {
+                    "name": "Researcher",
+                    "instructions": "Look things up for the crew and report back in brief.",
+                }}),
+            )
+            .await
+        }
+    });
+    let request = loop {
+        let pending = runtime.store().pending_approvals_for_run(run).unwrap();
+        if let Some(first) = pending.first() {
+            break *first;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    runtime.decide_approval(request, Decision::Allow).unwrap();
+    let body = asked.await.unwrap();
+    assert_eq!(body["result"]["isError"], false, "{body}");
+    let made = runtime.store().list_agents().unwrap();
+    assert!(made.iter().any(|a| a.name == "Researcher"), "{made:?}");
+
+    // A note of its own, and memory: the tools that write to the agent's row.
+    let body = rpc(
+        &runtime,
+        &route(addr, dana, run),
+        "tools/call",
+        json!({ "name": "note_progress", "arguments": { "note": "made Researcher" } }),
+    )
+    .await;
+    assert_eq!(body["result"]["isError"], false, "{body}");
+
+    // Errands are the session's own subagents, and the tool says so.
+    let body = rpc(
+        &runtime,
+        &route(addr, dana, run),
+        "tools/call",
+        json!({ "name": "errand", "arguments": { "to": "x", "text": "y" } }),
+    )
+    .await;
+    assert_eq!(body["result"]["isError"], true, "{body}");
+    let said = body["result"]["content"][0]["text"].as_str().unwrap_or_default();
+    assert!(said.contains("Task tool"), "{said}");
 }
 
 #[tokio::test]
@@ -181,7 +291,7 @@ async fn initialize_names_the_server() {
     assert_eq!(body["result"]["protocolVersion"], "2025-03-26");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_rest_of_the_protocol_is_answered_as_a_client_expects() {
     let (addr, runtime, _dir) = workspace().await;
     let url = route(addr, AgentId::new(), RunId::new());
@@ -193,7 +303,17 @@ async fn the_rest_of_the_protocol_is_answered_as_a_client_expects() {
     let body = rpc(&runtime, &url, "resources/list", json!({})).await;
     assert_eq!(body["error"]["code"], -32601, "{body}");
 
-    let body = rpc(&runtime, &url, "tools/call", json!({ "name": "Bash", "arguments": {} })).await;
+    // A tool that is not Guaca's, asked of a live turn, is the protocol's error.
+    let dana = agent(addr, "Dana").await;
+    let run = RunId::new();
+    runtime.open_relay_for_tests(dana, run);
+    let body = rpc(
+        &runtime,
+        &route(addr, dana, run),
+        "tools/call",
+        json!({ "name": "Bash", "arguments": {} }),
+    )
+    .await;
     assert_eq!(body["error"]["code"], -32602, "{body}");
     assert!(body["error"]["message"].as_str().unwrap().contains("send_message"), "{body}");
 
@@ -266,7 +386,9 @@ async fn a_live_relay_queues_a_message_for_the_peer() {
     .await;
     assert_eq!(body["result"]["isError"], true, "{body}");
     let said = body["result"]["content"][0]["text"].as_str().unwrap_or_default();
-    assert!(said.contains("send_message arguments were not understood"), "{said}");
+    // The same words a model gets from the runtime's own parser.
+    assert!(said.starts_with("Error:"), "{said}");
+    assert!(said.contains("`text`"), "{said}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

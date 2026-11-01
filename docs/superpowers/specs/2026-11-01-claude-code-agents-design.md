@@ -147,24 +147,28 @@ session that may have half-processed it.
 The reply is `collected_text`, filed by the existing `ReplyMode` logic, which
 answers the peer or operator who asked.
 
-**Peer messaging (designer's call, after review).** Reply routing only answers;
-unprompted contact goes through `send_to_peers`, which only the `send_message`
-tool reaches. So the daemon exposes exactly one MCP tool, `send_message`, with
-the same schema as the Guaca tool, over HTTP on the daemon's loopback bind. Each
+**Guaca's tools over the bridge (operator's ruling, 2026-11-01, superseding the
+one-tool design).** The first live crew could message but could not see the
+directory or make an agent, and the operator's terms are "no lost
+functionality". So the daemon's MCP server lists exactly the tools the turn
+would have offered a model: everything in `tools::specs` for the agent's grants
+plus its crew's plugins, less `errand` (a session has subagents of its own). Each
 turn's process gets `--mcp-config` pointing at it with the agent id and the
-turn's run id in the URL, plus `--strict-mcp-config` is **not** passed, so the
-operator's own MCP servers still load. The handler calls the same code path
-`execute_tool` uses for `send_message`, so limits, trust labels and chips are
-unchanged. A tool use of `mcp__guaca__send_message` in the stream draws as the
-existing "messaged <peer>" chip. This is the one place Guaca's tools reach the
-subprocess, and the only one allowed.
+turn's run id in the URL; `--strict-mcp-config` is **not** passed, so the
+operator's own MCP servers still load. `tools/call` goes through the same
+`dispatch_tool` every other agent's calls take, with the turn's state held in a
+relay for as long as the session runs, so limits, grants, parked permission
+requests, trust labels and the words the model reads are unchanged. A tool use
+of `mcp__guaca__<name>` in the stream draws as the existing chip for `<name>`.
+This is the one place Guaca's tools reach the subprocess, and the only one
+allowed.
 
-**System prompt (designer's call).** The assembled prompt from
-`prompt::system_prompt` with an empty tool list, so the agent knows the
-operator, its peers, memory and the reply conventions, and is not told about
-tools it does not have. One appended line names `send_message` as the way to
-reach a peer. It is sent with `--append-system-prompt` on the first turn only;
-later turns rely on the session.
+**System prompt (revised with the above).** The full assembled prompt, tools
+described, plus one section telling the session which tools are its own and how
+the program names Guaca's. Sent on every turn by `--append-system-prompt-file`
+(a private file, like the MCP config): the program builds its prompt per process
+and keeps none of it with the session, and a live probe confirmed an appended
+prompt does not stack across resumes.
 
 **Cost (designer's call).** Same as the existing Claude provider: tokens are
 counted and `cost` is `None`, because a plan is unpriced and the usage table's

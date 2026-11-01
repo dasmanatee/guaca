@@ -13,6 +13,21 @@ the code is `llm/codex.rs`, `llm/claude.rs` and `subscription.rs`.
   tools and settings into a turn that is meant to be one model call. Each file's
   head says which request it is making; read it before moving a line between
   them.
+- **A Claude Code agent gets Guaca's whole toolbox over the bridge, not one
+  tool.** The first cut offered `send_message` alone, on the theory that every
+  other tool assumed a loop Guaca runs. The first live crew then could not read
+  the directory or make an agent, which is most of what agents do with each
+  other. `dispatch_tool` never needed the loop; it needs the turn's state, and
+  the relay in `runtime/mod.rs` holds exactly that for as long as the session
+  runs. Add a tool to `tools::specs` and a Claude Code agent has it on its next
+  turn; the only one withheld is `errand`, and `relay_call` says why.
+- **The session's system prompt goes on every turn, as a file.** The program
+  builds its prompt per process and keeps none of it with the session, so a
+  prompt sent on the first turn only left every later turn on the first turn's
+  roster. A live probe (`--resume` with the same `--append-system-prompt`) showed
+  one copy, not two. `--append-system-prompt-file` because a crew's prompt can
+  outgrow one argument, and because the file is private where the command line
+  is not.
 - **A ChatGPT access token's `exp` is not when it stops working.** OpenAI mints
   one ten days out and the backend refuses it after about three, with
   `token_expired`. The local claim is the only signal on the machine and it is

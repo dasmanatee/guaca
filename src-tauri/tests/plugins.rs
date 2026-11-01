@@ -639,6 +639,8 @@ fn crew(store: &Store, group: GroupId, name: &str) -> AgentId {
             color: "#7fb069".to_string(),
             model: "anthropic/claude-sonnet-4.5".to_string(),
             subscription_model: None,
+            cwd: None,
+            claude_model: None,
             reasoning_effort: None,
             system_prompt: "be useful".to_string(),
             skills: Vec::new(),

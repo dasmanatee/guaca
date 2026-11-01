@@ -621,6 +621,8 @@ pub fn draft(name: &str, skills: &[&str]) -> CleanDraft {
         color: "#7fb069".into(),
         model: "test/model".into(),
         subscription_model: None,
+        cwd: None,
+        claude_model: None,
         reasoning_effort: None,
         system_prompt: format!("You are the {name}."),
         skills: skills.iter().map(|s| s.to_string()).collect(),

@@ -173,6 +173,9 @@ fn new_card(draft: &CleanDraft, rail_order: i32, fallback: GroupId) -> AgentCard
         color: draft.color.clone(),
         model: draft.model.clone(),
         subscription_model: draft.subscription_model.clone().unwrap_or_default(),
+        cwd: draft.cwd.clone().unwrap_or_default(),
+        claude_model: draft.claude_model.clone().unwrap_or_default(),
+        claude_session: None,
         reasoning_effort: draft.reasoning_effort,
         system_prompt: draft.system_prompt.clone(),
         skills: draft.skills.clone(),
@@ -211,8 +214,8 @@ fn bottom_of_rail(conn: &rusqlite::Connection) -> Result<i32, StoreError> {
 /// single create and a batch inside a transaction; `Transaction` derefs here.
 fn insert_agent(conn: &rusqlite::Connection, card: &AgentCard) -> Result<(), StoreError> {
     conn.execute(
-        "INSERT INTO agents (id,name,avatar,color,model,system_prompt,skills,lifecycle,version,created_at,updated_at,group_id,rail_order,reasoning_effort,subscription_model)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+        "INSERT INTO agents (id,name,avatar,color,model,system_prompt,skills,lifecycle,version,created_at,updated_at,group_id,rail_order,reasoning_effort,subscription_model,cwd,claude_model)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
         params![
             card.id.to_string(),
             card.name,
@@ -229,6 +232,8 @@ fn insert_agent(conn: &rusqlite::Connection, card: &AgentCard) -> Result<(), Sto
             card.rail_order,
             card.reasoning_effort.map(|e| e.as_str()),
             card.subscription_model,
+            card.cwd,
+            card.claude_model,
         ],
     )
     .map_err(|e| classify(e, &card.name))?;
@@ -362,6 +367,22 @@ impl Store {
         Ok(cards)
     }
 
+    /// Records the session a Claude Code agent's program named, or forgets it.
+    ///
+    /// Leaves `version` alone: the session is the runtime's bookkeeping, no
+    /// peer reads it off the card, and an edit-looking bump would make every
+    /// first turn look like a change to the agent.
+    pub fn set_claude_session(&self, id: AgentId, session: Option<&str>) -> Result<(), StoreError> {
+        let changed = self.conn()?.execute(
+            "UPDATE agents SET claude_session = ?2 WHERE id = ?1",
+            params![id.to_string(), session],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::AgentNotFound(id));
+        }
+        Ok(())
+    }
+
     /// Applies an operator edit and bumps the card version.
     ///
     /// The version bump is what lets a peer notice the card changed under it,
@@ -380,7 +401,8 @@ impl Store {
                     SET name=?2, avatar=?3, color=?4, model=?5, system_prompt=?6, skills=?7,
                         version = version + 1, updated_at=?8,
                         group_id = coalesce(?9, group_id), reasoning_effort=?10,
-                        subscription_model = coalesce(?11, subscription_model)
+                        subscription_model = coalesce(?11, subscription_model),
+                        cwd = coalesce(?12, cwd), claude_model = coalesce(?13, claude_model)
                   WHERE id=?1",
                 params![
                     id.to_string(),
@@ -394,6 +416,8 @@ impl Store {
                     draft.group_id.map(|g| g.to_string()),
                     draft.reasoning_effort.map(|e| e.as_str()),
                     draft.subscription_model,
+                    draft.cwd,
+                    draft.claude_model,
                 ],
             )
             .map_err(|e| classify(e, &draft.name))?;
@@ -3856,7 +3880,7 @@ pub(super) type RowResult<T> = Result<Result<T, StoreError>, rusqlite::Error>;
 /// one of the five queries that share this mapper and not the others is four
 /// reads that silently take the wrong field, which is what a card carrying
 /// somebody else's sandbox token looks like on the way out.
-const AGENT_COLUMNS: &str = "id,name,avatar,color,model,system_prompt,skills,lifecycle,version,created_at,updated_at,group_id,sandbox_id,sandbox_envd_token,sandbox_traffic_token,pinned,rail_order,browser_id,has_computer,has_browser,browser_consent,discarded_at,reasoning_effort,runs_errands,subscription_model";
+const AGENT_COLUMNS: &str = "id,name,avatar,color,model,system_prompt,skills,lifecycle,version,created_at,updated_at,group_id,sandbox_id,sandbox_envd_token,sandbox_traffic_token,pinned,rail_order,browser_id,has_computer,has_browser,browser_consent,discarded_at,reasoning_effort,runs_errands,subscription_model,cwd,claude_model,claude_session";
 
 fn read_effort(
     row: &Row<'_>,
@@ -3897,6 +3921,9 @@ fn row_to_card(row: &Row<'_>) -> RowResult<AgentCard> {
             color: row.get(3)?,
             model: row.get(4)?,
             subscription_model: row.get(24)?,
+            cwd: row.get(25)?,
+            claude_model: row.get(26)?,
+            claude_session: row.get(27)?,
             reasoning_effort: read_effort(row, 22)?,
             system_prompt: row.get(5)?,
             skills,
@@ -4548,6 +4575,8 @@ mod tests {
             color: "#7fb069".into(),
             model: "anthropic/claude-sonnet-4.5".into(),
             subscription_model: None,
+            cwd: None,
+            claude_model: None,
             reasoning_effort: None,
             system_prompt: "be useful".into(),
             skills: vec!["coordination".into()],
@@ -4594,6 +4623,39 @@ mod tests {
         assert!(matches!(notice.parts[0], Part::Notice { kind: NoticeKind::Interrupted, .. }));
         assert!(!notice.expects_reply);
         assert_eq!(messages.len(), 3);
+    }
+
+    #[test]
+    fn a_claude_code_agent_keeps_its_directory_model_and_session() {
+        let f = fixture();
+        let made = CleanDraft {
+            cwd: Some("/tmp".into()),
+            claude_model: Some("opus".into()),
+            ..draft("Coder")
+        };
+        let agent = f.store.create_agent(&made).unwrap();
+        assert_eq!((agent.cwd.as_str(), agent.claude_model.as_str()), ("/tmp", "opus"));
+        assert_eq!(agent.claude_session, None);
+
+        f.store.set_claude_session(agent.id, Some("abc")).unwrap();
+        let read = f.store.get_agent(agent.id).unwrap().unwrap();
+        assert_eq!(read.claude_session.as_deref(), Some("abc"));
+        assert_eq!(read.version, agent.version, "the session is bookkeeping, not an edit");
+
+        // An edit that names neither leaves both where they were.
+        let edited = f.store.update_agent(agent.id, &draft("Coder")).unwrap();
+        assert_eq!((edited.cwd.as_str(), edited.claude_model.as_str()), ("/tmp", "opus"));
+        assert_eq!(edited.claude_session.as_deref(), Some("abc"));
+
+        f.store.set_claude_session(agent.id, None).unwrap();
+        assert_eq!(f.store.get_agent(agent.id).unwrap().unwrap().claude_session, None);
+    }
+
+    #[test]
+    fn a_session_cannot_be_recorded_on_an_agent_that_is_gone() {
+        let f = fixture();
+        let err = f.store.set_claude_session(AgentId::new(), Some("abc")).unwrap_err();
+        assert!(matches!(err, StoreError::AgentNotFound(_)), "{err:?}");
     }
 
     #[test]

@@ -756,6 +756,13 @@ export interface AgentCard {
   /** The model it runs when the ChatGPT subscription pays. Blank inherits. The
    *  providers share no model names, so each keeps its own. See `ownModel`. */
   subscriptionModel: string;
+  /** Where a Claude Code agent's session runs. Blank on every other provider. */
+  cwd: string;
+  /** The model Claude Code is told to run. Blank inherits the program's own. */
+  claudeModel: string;
+  /** The session the program keeps on disk, once it has named one. Read-only:
+   *  only the runtime writes it. */
+  claudeSession: string | null;
   reasoningEffort?: ReasoningEffort | null;
   systemPrompt: string;
   skills: string[];
@@ -791,6 +798,9 @@ export interface AgentDraft {
   model: string;
   /** Omitted means "leave it as it is" on update, blank on create. */
   subscriptionModel?: string;
+  /** Omitted means "leave it as it is", like `subscriptionModel`. */
+  cwd?: string;
+  claudeModel?: string;
   reasoningEffort?: ReasoningEffort | null;
   systemPrompt: string;
   skills: string[];
@@ -821,9 +831,10 @@ export interface GuardLimits {
  * models and no per-call price. `claude` is not an endpoint at all: it runs the
  * `claude` program once per model call, which is the only way an Anthropic
  * subscription can pay for a turn, and it takes its sign-in and its model from
- * that program rather than from anything set here. They are three providers
- * rather than one with a flag for the same reason the Rust side says so: almost
- * nothing about a call is the same between them.
+ * that program rather than from anything set here. `claudeCode` is the same
+ * program run as an agent: a session in a working directory, told its model.
+ * They are four providers rather than one with a flag for the same reason the
+ * Rust side says so: almost nothing about a call is the same between them.
  */
 export type Provider = "compatible" | "chatgpt" | "claude" | "claudeCode";
 

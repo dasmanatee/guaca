@@ -64,6 +64,9 @@ function card(model = "", subscriptionModel = ""): AgentCard {
     color: "#c7d96b",
     model,
     subscriptionModel,
+    cwd: "",
+    claudeModel: "",
+    claudeSession: null,
     systemPrompt: "",
     skills: [],
     sandboxId: null,
@@ -326,4 +329,23 @@ it("offers no errands switch while the agent is still being created", async () =
   await waitFor(() => expect(api.subscriptionModels).toHaveBeenCalled());
   await act(async () => {});
   expect(screen.queryByRole("checkbox", { name: /^Errands/ })).toBeNull();
+});
+
+it("asks a Claude Code agent for a directory and a model, and no other provider", () => {
+  const code = aGroup({
+    name: "Code",
+    inference: { ...aGroup().inference, provider: "claudeCode" },
+  });
+  const { unmount } = open({ ...card(), groupId: code.id }, [code]);
+  expect(screen.getByLabelText(/^Working directory/)).toBeTruthy();
+  expect(screen.getByLabelText(/^Model/)).toBeTruthy();
+  expect(screen.getByLabelText(/^Skills/)).toBeTruthy();
+  unmount();
+
+  const keyed = aGroup({
+    name: "Keyed",
+    inference: { ...aGroup().inference, provider: "compatible" },
+  });
+  open({ ...card(), groupId: keyed.id }, [keyed]);
+  expect(screen.queryByLabelText(/^Working directory/)).toBeNull();
 });

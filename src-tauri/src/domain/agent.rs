@@ -150,6 +150,18 @@ pub struct AgentCard {
     /// model names, so one field is refused by name after every switch.
     #[serde(default)]
     pub subscription_model: String,
+    /// Where a Claude Code agent's session runs: an absolute path to a folder
+    /// that exists. Blank on every other provider, which never names one.
+    #[serde(default)]
+    pub cwd: String,
+    /// The model Claude Code is told to run, as a `--model` alias or full name.
+    /// Its own field for the same reason as `subscription_model`.
+    #[serde(default)]
+    pub claude_model: String,
+    /// The session the program keeps on disk, which every turn resumes. Written
+    /// only by the runtime once the program names it, never by an operator edit.
+    #[serde(default)]
+    pub claude_session: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<ReasoningEffort>,
     pub system_prompt: String,
@@ -252,12 +264,14 @@ impl AgentCard {
     ///
     /// Each provider reads only its own field, so a model chosen while one
     /// provider paid is kept, and never sent, while the other does. Claude
-    /// reads neither: which model answers is the program's own setting.
+    /// reads neither: which model answers is the program's own setting. Claude
+    /// Code is told its model, so it reads `claude_model`.
     pub fn own_model(&self, provider: Provider) -> Option<&str> {
         let named = match provider {
             Provider::Compatible => &self.model,
             Provider::Chatgpt => &self.subscription_model,
-            Provider::Claude | Provider::ClaudeCode => return None,
+            Provider::ClaudeCode => &self.claude_model,
+            Provider::Claude => return None,
         };
         Some(named.trim()).filter(|model| !model.is_empty())
     }
@@ -339,6 +353,13 @@ pub struct AgentDraft {
     /// clear a subscription model it never showed.
     #[serde(default)]
     pub subscription_model: Option<String>,
+    /// Absent keeps what is stored on update and is blank on create; a blank
+    /// one is stored blank. Checked only when it names something.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Absent keeps what is stored, as `subscription_model` does.
+    #[serde(default)]
+    pub claude_model: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<ReasoningEffort>,
     pub system_prompt: String,
@@ -358,6 +379,10 @@ pub enum DraftError {
     BlankAvatar,
     #[error("an agent named {name:?} already exists")]
     DuplicateName { name: String },
+    #[error(
+        "working directory {got:?} {why}. Give the agent an absolute path to a folder that exists."
+    )]
+    BadWorkingDirectory { got: String, why: &'static str },
 }
 
 pub const MAX_NAME_LEN: usize = 48;
@@ -389,6 +414,22 @@ impl AgentDraft {
         let color = normalize_color(&self.color)
             .ok_or_else(|| DraftError::BadColor { got: self.color.clone() })?;
 
+        // The daemon runs this on the machine the program will run on, so the
+        // folder can be checked here instead of failing on the first turn.
+        let cwd = self.cwd.as_deref().map(str::trim);
+        if let Some(path) = cwd.filter(|path| !path.is_empty()) {
+            let why = if !std::path::Path::new(path).is_absolute() {
+                Some("is not an absolute path")
+            } else if !std::path::Path::new(path).is_dir() {
+                Some("is not a directory")
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                return Err(DraftError::BadWorkingDirectory { got: path.to_string(), why });
+            }
+        }
+
         Ok(CleanDraft {
             group_id: self.group_id,
             name: name.to_string(),
@@ -396,6 +437,8 @@ impl AgentDraft {
             color,
             model: model.to_string(),
             subscription_model: self.subscription_model.as_deref().map(|m| m.trim().to_string()),
+            cwd: cwd.map(str::to_string),
+            claude_model: self.claude_model.as_deref().map(|m| m.trim().to_string()),
             reasoning_effort: self.reasoning_effort,
             system_prompt: self.system_prompt.trim().to_string(),
             skills: self
@@ -417,6 +460,10 @@ pub struct CleanDraft {
     pub model: String,
     /// `None` keeps what is stored; see [`AgentDraft::subscription_model`].
     pub subscription_model: Option<String>,
+    /// `None` keeps what is stored; see [`AgentDraft::cwd`].
+    pub cwd: Option<String>,
+    /// `None` keeps what is stored; see [`AgentDraft::claude_model`].
+    pub claude_model: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub system_prompt: String,
     pub skills: Vec<String>,
@@ -556,10 +603,42 @@ mod tests {
             color: "#7FB069".into(),
             model: "anthropic/claude-sonnet-4.5".into(),
             subscription_model: None,
+            cwd: None,
+            claude_model: None,
             reasoning_effort: None,
             system_prompt: "  You coordinate.  ".into(),
             skills: vec!["  delegation  ".into(), "   ".into()],
         }
+    }
+
+    #[test]
+    fn a_relative_working_directory_is_refused() {
+        let d = AgentDraft { cwd: Some("projects/x".into()), ..draft() };
+        assert!(matches!(d.validate(), Err(DraftError::BadWorkingDirectory { .. })));
+    }
+
+    #[test]
+    fn a_working_directory_that_is_not_a_directory_is_refused() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let d = AgentDraft { cwd: Some(file.path().display().to_string()), ..draft() };
+        assert!(matches!(d.validate(), Err(DraftError::BadWorkingDirectory { .. })));
+    }
+
+    #[test]
+    fn an_absent_or_blank_working_directory_is_kept_as_is() {
+        assert_eq!(AgentDraft { cwd: None, ..draft() }.validate().unwrap().cwd, None);
+        let blank = AgentDraft { cwd: Some("  ".into()), ..draft() };
+        assert_eq!(blank.validate().unwrap().cwd, Some(String::new()));
+    }
+
+    #[test]
+    fn claude_code_reads_its_own_model_field() {
+        let named = AgentCard { claude_model: " opus ".into(), ..card() };
+        assert_eq!(named.own_model(Provider::ClaudeCode), Some("opus"));
+        assert_eq!(
+            AgentCard { claude_model: " ".into(), ..card() }.own_model(Provider::ClaudeCode),
+            None
+        );
     }
 
     #[test]
@@ -653,6 +732,9 @@ mod tests {
             color: "#7fb069".into(),
             model: "m".into(),
             subscription_model: String::new(),
+            cwd: String::new(),
+            claude_model: String::new(),
+            claude_session: None,
             reasoning_effort: None,
             system_prompt: "SECRET INSTRUCTIONS".into(),
             skills: vec!["delegation".into()],

@@ -281,6 +281,8 @@ mod tests {
                 color: "#7fb069".into(),
                 model: String::new(),
                 subscription_model: None,
+                cwd: None,
+                claude_model: None,
                 reasoning_effort: None,
                 system_prompt: String::new(),
                 skills: vec![],

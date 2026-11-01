@@ -20,7 +20,7 @@ pub const MAX_ARCHIVE: usize = 64 * 1024 * 1024;
 // a computer and a browser are given again on the host a crew lands on.
 const TABLES: &[(&str, &str, &str)] = &[
     ("groups", "id,name,created_at,base_url,default_model,provider,subscription_model,reasoning_effort,request_timeout_secs,max_hops,max_steps_per_run,max_fanout_per_call,max_sends_per_pair,max_tool_rounds", "id = ?1"),
-    ("agents", "id,group_id,name,avatar,color,model,subscription_model,reasoning_effort,system_prompt,skills,lifecycle,version,created_at,updated_at,pinned,rail_order,discarded_at,browser_consent", "group_id = ?1"),
+    ("agents", "id,group_id,name,avatar,color,model,subscription_model,cwd,claude_model,reasoning_effort,system_prompt,skills,lifecycle,version,created_at,updated_at,pinned,rail_order,discarded_at,browser_consent", "group_id = ?1"),
     ("routines", "id,agent_id,name,what,fires,active,next_run_at,last_run_at,created_at,skip_if_working", "agent_id IN (SELECT id FROM agents WHERE group_id = ?1)"),
     ("messages", "id,run_id,channel_id,from_kind,from_agent,to_kind,to_agent,parts,trust,hop,expects_reply,cause,created_at,intent", "channel_id IN (SELECT id FROM agents WHERE group_id = ?1)"),
     ("occasions", "id,group_id,agent_id,title,detail,place,starts_at,minutes,all_day,created_at,updated_at", "group_id = ?1"),
@@ -777,6 +777,8 @@ mod tests {
                 color: "#7fb069".into(),
                 model: "small".into(),
                 subscription_model: None,
+                cwd: None,
+                claude_model: None,
                 reasoning_effort: None,
                 system_prompt: String::new(),
                 skills: vec![],

@@ -151,10 +151,11 @@ export function onOpenRouter(group: Group | undefined, settings: Settings | null
  *
  * Each provider has a field of its own because they share no model names, so a
  * model kept for the other one is never shown as the one running. Claude reads
- * neither. An unknown provider is the default the backend has, a key.
+ * neither, and Claude Code reads `claudeModel`. An unknown provider is the default the backend has, a key.
  */
 export function ownModel(agent: AgentCard, provider: ProviderKind | null | undefined): string {
-  if (provider === "claude" || provider === "claudeCode") return "";
+  if (provider === "claude") return "";
+  if (provider === "claudeCode") return agent.claudeModel.trim();
   return (provider === "chatgpt" ? agent.subscriptionModel : agent.model).trim();
 }
 

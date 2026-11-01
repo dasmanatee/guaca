@@ -5213,6 +5213,8 @@ impl Runtime {
             // starts too. What a new agent costs to run stays the operator's.
             model: String::new(),
             subscription_model: None,
+            cwd: None,
+            claude_model: None,
             reasoning_effort: None,
             system_prompt: draft.instructions.clone(),
             skills: draft.skills.clone(),
@@ -8013,6 +8015,9 @@ mod tests {
             color: "#7fb069".into(),
             model: "m".into(),
             subscription_model: String::new(),
+            cwd: String::new(),
+            claude_model: String::new(),
+            claude_session: None,
             reasoning_effort: None,
             system_prompt: String::new(),
             skills: Vec::new(),

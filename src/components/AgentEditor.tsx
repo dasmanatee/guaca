@@ -34,6 +34,8 @@ export function AgentEditor({ agent, onClose }: Props) {
     color: agent?.color ?? suggestAccent(agents.map((a) => a.color)),
     model: agent?.model ?? "",
     subscriptionModel: agent?.subscriptionModel ?? "",
+    cwd: agent?.cwd ?? "",
+    claudeModel: agent?.claudeModel ?? "",
     reasoningEffort: agent?.reasoningEffort ?? null,
     systemPrompt: agent?.systemPrompt ?? "",
     skills: agent?.skills ?? [],
@@ -246,7 +248,54 @@ export function AgentEditor({ agent, onClose }: Props) {
             onChange={(subscriptionModel) => patch({ subscriptionModel })}
             hint="Choose a ChatGPT model for this agent, or use the group default. Choices come from your signed-in account."
           />
-        ) : provider === "claude" || provider === "claudeCode" ? (
+        ) : provider === "claudeCode" ? (
+          <>
+            <label className="field">
+              <span className="field__label">Working directory</span>
+              <input
+                className="input input--mono"
+                value={draft.cwd ?? ""}
+                placeholder="/home/you/projects/thing"
+                onChange={(event) => patch({ cwd: event.target.value })}
+              />
+              <span className="field__hint">
+                Where this agent's Claude Code session runs. Absolute path to an existing folder.
+              </span>
+            </label>
+            <label className="field">
+              <span className="field__label">Model</span>
+              <input
+                className="input input--mono"
+                value={draft.claudeModel ?? ""}
+                placeholder="sonnet"
+                onChange={(event) => patch({ claudeModel: event.target.value })}
+              />
+              <span className="field__hint">
+                A Claude model alias or full name, passed to claude --model.
+              </span>
+            </label>
+            {agent?.claudeSession && (
+              <div className="field">
+                <span className="field__label">Session</span>
+                <div className="row">
+                  <input
+                    className="input input--mono"
+                    value={agent.claudeSession}
+                    readOnly
+                    aria-label="Session"
+                  />
+                  <button
+                    type="button"
+                    className="btn btn--small"
+                    onClick={() => void navigator.clipboard?.writeText(agent.claudeSession ?? "")}
+                  >
+                    Copy
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        ) : provider === "claude" ? (
           <div className="field">
             <span className="field__label">Model</span>
             <span className="field__hint">
@@ -283,14 +332,16 @@ export function AgentEditor({ agent, onClose }: Props) {
           </>
         )}
 
-        <ModelSuggestions
-          name={draft.name}
-          skills={skills}
-          instructions={draft.systemPrompt}
-          model={draft.model}
-          active={onOpenRouter(crew, settings)}
-          onChoose={(model) => patch({ model })}
-        />
+        {provider !== "claudeCode" && (
+          <ModelSuggestions
+            name={draft.name}
+            skills={skills}
+            instructions={draft.systemPrompt}
+            model={draft.model}
+            active={onOpenRouter(crew, settings)}
+            onChoose={(model) => patch({ model })}
+          />
+        )}
 
         <label className="field">
           <span className="field__label">Skills</span>

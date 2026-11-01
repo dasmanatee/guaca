@@ -205,7 +205,8 @@ impl InferenceConfig {
     /// `Claude` has no field to read and does not gain one. The model belongs to
     /// the program, which is signed in, configured and updated somewhere this
     /// app does not reach. What comes back is a label rather than a model id, and the model
-    /// the program actually ran is reported in its own stream.
+    /// the program actually ran is reported in its own stream. `ClaudeCode`
+    /// returns a real default model, since that program is told which to run.
     pub fn active_model(&self) -> &str {
         match self.provider {
             Provider::Chatgpt => &self.subscription_model,

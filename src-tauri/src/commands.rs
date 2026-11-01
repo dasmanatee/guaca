@@ -1957,10 +1957,18 @@ pub async fn set_agent_paused(state: &AppState, id: AgentId, paused: bool) -> Re
 /// first one could have opened.
 fn refusal(
     card: &AgentCard,
+    provider: config::Provider,
     ghostty: Option<PathBuf>,
     display: bool,
     open: bool,
 ) -> Option<String> {
+    // A session left from when the agent was on Claude Code is not what its
+    // turns run now, and opening it would hold an inbox that nothing writes.
+    if provider != config::Provider::ClaudeCode {
+        return Some(
+            "This agent is not on the Claude Code provider; there is no session to resume.".into(),
+        );
+    }
     let Some(session) = card.claude_session.as_deref().filter(|session| !session.is_empty()) else {
         return Some(
             "This agent has no Claude Code session yet. Send it a message first, then resume it."
@@ -1997,7 +2005,10 @@ pub async fn resume_in_terminal(state: &AppState, id: AgentId) -> Reply<()> {
         .iter()
         .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
     let runtime = &state.runtime;
-    if let Some(refused) = refusal(&card, ghostty.clone(), display, runtime.in_terminal(id)) {
+    let provider = runtime.provider_for(&card);
+    if let Some(refused) =
+        refusal(&card, provider, ghostty.clone(), display, runtime.in_terminal(id))
+    {
         return Err(CommandError::new("terminal", refused));
     }
     let (Some(ghostty), Some(session)) = (ghostty, card.claude_session) else {
@@ -3181,7 +3192,7 @@ mod tests {
 
     #[test]
     fn an_agent_with_no_session_has_nothing_to_resume() {
-        let said = refusal(&coder(None), ghostty(), true, false);
+        let said = refusal(&coder(None), config::Provider::ClaudeCode, ghostty(), true, false);
         assert_eq!(
             said.as_deref(),
             Some(
@@ -3189,15 +3200,33 @@ mod tests {
             )
         );
         // A cleared session is the same as none: `/clear` leaves it blank.
-        assert_eq!(refusal(&coder(Some("")), ghostty(), true, false), said);
+        assert_eq!(
+            refusal(&coder(Some("")), config::Provider::ClaudeCode, ghostty(), true, false),
+            said
+        );
         // Before everything else, because nothing else can help.
-        assert_eq!(refusal(&coder(None), None, false, true), said);
+        assert_eq!(refusal(&coder(None), config::Provider::ClaudeCode, None, false, true), said);
+    }
+
+    #[test]
+    fn an_agent_off_claude_code_has_no_session_to_resume() {
+        // Moved to another provider after a session was stored: the session
+        // is still on the row, and is not what the agent runs any more.
+        for provider in [config::Provider::Compatible, config::Provider::Claude] {
+            assert_eq!(
+                refusal(&coder(Some("abc-123")), provider, ghostty(), true, false).as_deref(),
+                Some(
+                    "This agent is not on the Claude Code provider; there is no session to resume."
+                )
+            );
+        }
     }
 
     #[test]
     fn no_ghostty_says_how_to_resume_it_by_hand() {
         assert_eq!(
-            refusal(&coder(Some("abc-123")), None, true, false).as_deref(),
+            refusal(&coder(Some("abc-123")), config::Provider::ClaudeCode, None, true, false)
+                .as_deref(),
             Some(
                 "Ghostty is not installed, or is not on this app's PATH. Install Ghostty, or run \
                  `claude --resume abc-123` in any terminal."
@@ -3208,7 +3237,8 @@ mod tests {
     #[test]
     fn a_daemon_with_no_desktop_cannot_open_a_window() {
         assert_eq!(
-            refusal(&coder(Some("abc-123")), ghostty(), false, false).as_deref(),
+            refusal(&coder(Some("abc-123")), config::Provider::ClaudeCode, ghostty(), false, false)
+                .as_deref(),
             Some(
                 "This daemon cannot open a window: it is not running on your desktop. Run it with \
                  scripts/native.sh, or run `claude --resume abc-123` in any terminal."
@@ -3219,10 +3249,14 @@ mod tests {
     #[test]
     fn a_second_window_on_one_session_is_refused() {
         assert_eq!(
-            refusal(&coder(Some("abc-123")), ghostty(), true, true).as_deref(),
+            refusal(&coder(Some("abc-123")), config::Provider::ClaudeCode, ghostty(), true, true)
+                .as_deref(),
             Some("This agent is already open in a terminal.")
         );
-        assert_eq!(refusal(&coder(Some("abc-123")), ghostty(), true, false), None);
+        assert_eq!(
+            refusal(&coder(Some("abc-123")), config::Provider::ClaudeCode, ghostty(), true, false),
+            None
+        );
     }
 
     #[test]

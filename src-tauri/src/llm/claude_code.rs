@@ -655,7 +655,8 @@ pub async fn stream<F: FnMut(Token<'_>)>(
                 return Err(LlmError::ProgramFailed {
                     program: PROGRAM,
                     message: format!(
-                        "{PROGRAM} wrote nothing for {} minutes and was stopped",
+                        "{PROGRAM} wrote nothing for {} minutes and was stopped. Send the message \
+                         again, or resume the session in a terminal to see what it was doing.",
                         IDLE.as_secs() / 60
                     ),
                 });

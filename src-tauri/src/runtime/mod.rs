@@ -1653,6 +1653,11 @@ impl Runtime {
         }
     }
 
+    /// The provider this agent's turns run on, after its group's overrides.
+    pub fn provider_for(&self, card: &AgentCard) -> Provider {
+        self.inference_for(card, &self.config()).provider
+    }
+
     /// Whether the operator has this agent's session open in a terminal right
     /// now, which is also whether its inbox is held.
     pub fn in_terminal(&self, id: AgentId) -> bool {

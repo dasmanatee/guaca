@@ -831,7 +831,8 @@ export interface GuardLimits {
  * `claude` program once per model call, which is the only way an Anthropic
  * subscription can pay for a turn, and it takes its sign-in and its model from
  * that program rather than from anything set here. `claudeCode` is the same
- * program run as an agent: a session in a working directory, told its model.
+ * program run as an agent: a session in a working directory, which picks its
+ * own model from the program's settings.
  * They are four providers rather than one with a flag for the same reason the
  * Rust side says so: almost nothing about a call is the same between them.
  */

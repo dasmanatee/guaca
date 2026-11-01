@@ -152,13 +152,14 @@ impl Registry {
 
     /// What Guaca will send this model, settled before the turn is assembled.
     ///
-    /// The two subscription providers are answered without a request. Their
+    /// The three subscription providers are answered without a request. Their
     /// models are the vendor's rather than the operator's (a ChatGPT plan runs
-    /// what the plan runs, and `claude` runs whatever it is configured to),
-    /// and every model either of them will hand a turn to takes pictures. There
-    /// is no endpoint to ask and no list to read: `codex.rs` and `claude.rs`
-    /// each already translate an image part into their own wire shape, which is
-    /// this same fact written once in each of them.
+    /// what the plan runs, and `claude`, as a model or as a Claude Code
+    /// session, runs whatever it is configured to), and every model any of them
+    /// will hand a turn to takes pictures. There is no endpoint to ask and no
+    /// list to read: `codex.rs` and `claude.rs` each already translate an image
+    /// part into their own wire shape, which is this same fact written once in
+    /// each of them.
     pub async fn of(&self, cfg: &InferenceConfig, model: &str) -> Modalities {
         match cfg.provider {
             Provider::Chatgpt | Provider::Claude | Provider::ClaudeCode => Modalities::seeing(),
@@ -478,7 +479,7 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
-    /// Both subscription providers run the vendor's own models, and every one
+    /// Every subscription provider runs the vendor's own models, and every one
     /// of them takes pictures. There is no endpoint to ask, and asking the
     /// operator's would answer for a model that is not paying for this turn.
     #[tokio::test]
@@ -486,7 +487,7 @@ mod tests {
         let (base, count) = stub(listing).await;
         let registry = Registry::new();
 
-        for provider in [Provider::Chatgpt, Provider::Claude] {
+        for provider in [Provider::Chatgpt, Provider::Claude, Provider::ClaudeCode] {
             let cfg = InferenceConfig { provider, ..against(&base) };
             // Named as the text-only model on purpose: the endpoint's list must
             // not be consulted for a turn that endpoint is not paying for.

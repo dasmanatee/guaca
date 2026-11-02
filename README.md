@@ -1,5 +1,7 @@
 # Guaca
 
+> **Fork notice.** This is Joshua's fork of [madebywelch/guaca](https://github.com/madebywelch/guaca), maintained at [dasmanatee/guaca](https://github.com/dasmanatee/guaca). It tracks upstream and adds changes made by the crew's own agents; see the branch list for what differs. The original AGPL-3.0 license and copyright apply.
+
 **A desktop app for AI agents that work together.**
 
 ![Guaca with a group of agents at work](docs/img/guaca.png)

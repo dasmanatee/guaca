@@ -146,7 +146,10 @@ export interface Prefs extends Theme {
  */
 export const DEFAULT_PREFS: Prefs = Object.freeze({
   uiScale: 100,
-  surface: "light",
+  // The window follows the OS until the operator picks a surface. Paper was
+  // the default while paper was the only surface; a dark room that gets paper
+  // at every launch is the one case `system` exists for.
+  surface: "system",
   ...DEFAULT_THEME,
   typeface: "inter",
   reading: "interface",

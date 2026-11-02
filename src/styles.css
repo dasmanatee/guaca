@@ -31,9 +31,9 @@
    `--flesh` could have guessed it meant "answer me". `--accent` is not one of
    these. It is an agent's own color, set on whatever that agent draws.
 
-   Paper is the default and does not win in a dark room, which is the whole
-   reason the reading column is a token block behind `data-surface` rather
-   than a set of literals. The two navigation columns are part of that
+   Paper does not win in a dark room, which is the whole reason the reading
+   column is a token block behind `data-surface` rather than a set of
+   literals; the window follows the OS until the operator picks a surface. The two navigation columns are part of that
    question rather than exempt from it: they are the same ground as each
    other, a shade off the page, and they move with it. They used to be ink
    under both surfaces and pin their own accents against the reading column,

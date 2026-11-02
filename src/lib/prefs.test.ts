@@ -41,15 +41,16 @@ const KEY = "guac.prefs";
 /**
  * The defaults, written out independently of the module's own constant.
  *
- * 100 and light are what the app has always drawn. Neutral grays, amber, Inter,
- * 16px reading and the drawn cast are the first look a new operator gets. Every
+ * 100 is what the app has always drawn, and the surface follows the OS until
+ * the operator picks one. Neutral grays, amber, Inter, 16px reading and the
+ * drawn cast are the first look a new operator gets. Every
  * notification is on because a blob that cannot be read must not be able to
  * switch interruptions off. Asserting against the module constant would pass
  * whatever it said.
  */
 const DEFAULTS: Prefs = {
   uiScale: 100,
-  surface: "light",
+  surface: "system",
   grays: "neutral",
   attention: "amber",
   contrast: "standard",
@@ -265,8 +266,9 @@ describe("a preference that outlives the window", () => {
   });
 
   it("keeps every surface, including the one that is not a color", () => {
-    // System is the one worth naming: dropped from the reader, it reverts to
-    // light, and the operator's window stops following the OS at every launch.
+    // System is the default, so the reader only has to keep the two colors;
+    // but a reader that dropped it would also drop an operator's explicit
+    // choice to follow the OS, and the next default change would hide that.
     for (const surface of ["light", "dark", "system"] as const) {
       expect(readPrefs({ surface }).surface).toBe(surface);
     }
